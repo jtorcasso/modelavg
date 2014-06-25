@@ -272,6 +272,7 @@ def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
         sample.update({m:rslts})
     
     p.close()
+    p.join()
     
     return sample
   
