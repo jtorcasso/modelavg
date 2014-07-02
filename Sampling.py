@@ -52,6 +52,17 @@ import matplotlib.pylab as plt
 
 from ModelSpace import *
 
+def SampleAll():
+    '''samples from all of the models'''
+
+    model_space = modelcontext()
+    sample = {}
+    regressors = model_space.regressors
+    for k in range(len(regressors)):
+        for cols in itertools.combinations(regressors, k+1):
+            sample.update({str(cols):model_space.fit(draw)})
+
+    return sample
 
 def random_draw(num_regressors, K):
     '''draws a set of regressors at random
