@@ -36,7 +36,7 @@ def fit_for_ma(self, prior_type=None, **kwargs):
         elif prior_type == 'collinear adjusted dilution':
             rslts.prior = collinear_adj_prior(self.exog)    
         rslts.posterior = math.exp(rslts.llf)*rslts.prior
-    
+
     rslts.visits = 0
         
     return rslts

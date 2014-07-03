@@ -43,6 +43,7 @@ from __future__ import print_function, division
 # Standard Library
 import random
 import multiprocessing as mp
+import itertools
 
 # Third Party
 import numpy as np
@@ -52,15 +53,65 @@ import matplotlib.pylab as plt
 
 from ModelSpace import *
 
+def _get_result(columns):
+    '''obtain model results
+
+    Parameters
+    ----------
+    columns : list
+        columns in data
+
+    Returns
+    -------
+    rslt : dict
+        column-result pair
+    '''
+
+    model_space = modelcontext()
+
+    return (str(columns), model_space.fit(sorted(columns)))
+
 def SampleAll():
     '''samples from all of the models'''
 
     model_space = modelcontext()
     sample = {}
     regressors = model_space.regressors
-    for k in range(len(regressors)):
-        for cols in itertools.combinations(regressors, k+1):
-            sample.update({str(cols):model_space.fit(draw)})
+    K = model_space.K
+    cols = itertools.chain.from_iterable(iter(itertools.combinations(xrange(1,K+1),k) \
+                                          for k in regressors))
+    for c in cols:
+        sample.update({str(c):model_space.fit(sorted(c))})
+
+    return sample
+
+def pSampleAll(threads=2):
+    '''samples from all models in parallel
+
+    Parameters
+    ----------
+    threads : int
+        number of processes to spawn
+
+    Returns
+    -------
+    sample : dict
+        column-rslt object pairs
+    '''
+
+    model_space = modelcontext()
+    sample = {}
+    regressors = model_space.regressors
+    K = model_space.K
+
+    p = mp.Pool(threads)
+
+    cols = itertools.chain.from_iterable(iter(itertools.combinations(xrange(1,K+1),k) \
+                                          for k in regressors))
+    sample = dict(p.map(_get_result, cols))
+
+    p.close()
+    p.join()
 
     return sample
 
@@ -97,6 +148,9 @@ def RandomSample(draws, seed=1234):
     
     '''
     model_space = modelcontext()
+    if draws >= model_space.max_models:
+        return SampleAll()
+
     np.random.seed(seed)
     sample = {}
     while len(sample) < draws:
@@ -111,7 +165,7 @@ def pRandomSample(draws, seed=1234, threads=1):
     Parameters
     ----------
     draws : int
-        number of draws
+        number of draws in each thread
     seed : int
         seed number for random numbers
     threads : int
@@ -122,8 +176,12 @@ def pRandomSample(draws, seed=1234, threads=1):
     will create random sample of models for `draws` number
     of draws on each thread
     
-    '''    
-    
+    '''
+
+    model_space = modelcontext()
+    if draws >= model_space.max_models:
+        return pSampleAll(threads)
+
     argset = zip([draws]*threads, [seed+i for i in range(threads)])
     
     p = mp.Pool(threads)
@@ -186,7 +244,10 @@ def mcmc_draw(last_draw, model_space, cache={}):
     else:
         rslts = model_space.fit(proposal)
     
-    prob = min(1, rslts.posterior/cache[str(last_draw)].posterior)
+    if cache[str(last_draw)].posterior == 0:
+        prob = 1
+    else:
+        prob = min(1, rslts.posterior/cache[str(last_draw)].posterior)
     if np.random.choice([True, False], p=[prob, 1 - prob]):
         return proposal, rslts
     else:
@@ -207,9 +268,12 @@ def MCMC(visits, burn=0, thin=1, seed=1234):
     seed : int
         seed for random number
     '''
-    np.random.seed(seed)        
     model_space = modelcontext()
-    
+    if visits >= model_space.max_models:
+        return SampleAll()
+
+    np.random.seed(seed)        
+
     if burn >= visits:
         raise ValueError('burn must be fewer than total visits')
     if thin < 1:
@@ -243,7 +307,7 @@ def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
     Parameters
     ----------
     visits : int
-        number of visits in chain
+        number of visits per thread in chain
     burn : int
         number of visits to burn from beginning of chain
     thin : int
@@ -259,7 +323,11 @@ def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
     specified
     
     '''    
-    
+
+    model_space = modelcontext()
+    if visits*threads >= model_space.max_models:
+        return pSampleAll(threads)
+
     argset = zip([visits]*threads, [burn]*threads, [thin]*threads, 
                  [seed+i for i in range(threads)])
     
@@ -309,11 +377,11 @@ class Trace(object):
     '''
     
     def __init__(self, sample):
+        self.size = len(sample)
         self.ids = sample.keys()
         self.ids.sort()
         self.id_keys = {j:i for i,j in enumerate(self.ids)}
         self.results = self._handle_sample(sample, modelcontext())
-        self.size = len(sample)
         self.maxModels = modelcontext().max_models
 
     def _handle_sample(self, sample, model_space):
@@ -333,7 +401,10 @@ class Trace(object):
         # Normalizing
         for attr in ['posterior', 'visits', 'prior']:
             if attr in formatted_results:
-                formatted_results[attr] /= formatted_results[attr].sum()
+                if all(formatted_results[attr]) == 0:
+                    formatted_results[attr] = 1/(np.ones(self.size)*self.size)
+                else:
+                    formatted_results[attr] /= formatted_results[attr].sum()
         
         return formatted_results
 
@@ -697,7 +768,12 @@ if __name__ == '__main__':
         model.set_regressors(3,7)
         model.set_prior_type('collinear adjusted dilution')
         
+        print(model.regressors)
+        print(model.max_models)
         start = time.time()
+        sample = pSampleAll(4)
+        trace = Trace(sample)
+        trace.summary()
         mcmc = pMCMC(visits=10000, burn=1000, thin=2, seed=1234, threads=4)
         print("Chain took {} seconds to run".format(time.time() - start))
         trace = Trace(mcmc)
