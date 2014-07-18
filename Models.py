@@ -1,46 +1,84 @@
 import math
-import statsmodels.api as sm
+from statsmodels.api import OLS
 import numpy as np
-from ModelPriors import collinear_adj_prior
+from tables import IsDescription
 
-def fit_for_ma(self, prior_type=None, **kwargs):
-    '''an alternative fit method for statsmodels models
+def collinear_adj_prior(exog):
+    '''collinearity adjusted dilution prior
     
     Parameters
     ----------
-    self : statsmodels model class
-        class
+    exog : np.ndarray
+        exogenous data, includes a constant
+
+    Returns
+    -------
+    prob : float
+        proportional to prior model probability
+
+    Notes
+    -----
+    See George (2010); Dilution Priors: Compensating for Model
+    Space Redundancy
+    
+    pi = 0.5
+    
+    Issues
+    ------
+    If data does not have rank of at least 3, will not
+    calculate the dilution (correlation)
+    '''
+    
+    if exog.shape[1] < 3:
+        return 1.
+    
+    X = exog[:, 1:] #non-constant columns
+    
+    corr = np.corrcoef(X, rowvar=0)
+    
+    return max(0,np.linalg.det(corr))
+
+def linear(data, **kwargs):
+    '''linear regression model fitted with ordinary least squares
+    
+    Parameters
+    ----------
+    data : array or dataframe
+        first column is endogenous, second column is
+        a column of ones, the rest are exogenous data
+
+    ** Keyword Arguments **
+
+    prior_type : str
+        'uniform' or 'collinear adjusted dilution'
     
     Returns
     -------
-    rslts : sm.regression.RegressionResults instance
-        regression results instance with additional results
+    rslts : array
+        1-d array of parameter coefficients
     '''
     
-    endog = self.endog.reshape((-1,1))
+    prior_type = kwargs.get('prior_type', 'uniform')
+
+    endog = data[:, [0]]
+    exog = data[:, 1:]
+
+    model = OLS(endog=endog, exog=exog, missing='drop')
     
-    if hasattr(self, 'wexog'):
-        adj = (np.cov(np.hstack((self.wexog,endog)),rowvar=0)[:-1,-1]/\
-            np.var(endog)).reshape((-1,1))
+    adj = (np.cov(np.hstack((model.wexog, endog)), rowvar=0)[:-1, -1]/ \
+            np.var(endog)).reshape((-1, 1))
+    
+    fit = model.fit()
+    
+    par_rsquared = fit.params.reshape((-1,1))*adj    
+    
+    if prior_type == 'uniform':
+        prior = 1.
+    elif prior_type == 'collinear adjusted dilution':
+        prior = collinear_adj_prior(exog)
     else:
-        adj = None
+        raise ValueError('prior {} not supported'.format(prior_type))
     
-    rslts = self.fit(**kwargs)
-    
-    if adj is not None:
-        rslts.par_rsquared = rslts.params.reshape((-1,1))*adj    
-    
-    if hasattr(rslts, 'llf') & (prior_type is not None):
-        if prior_type == 'uniform':
-            rslts.prior = 1
-        elif prior_type == 'collinear adjusted dilution':
-            rslts.prior = collinear_adj_prior(self.exog)    
-        rslts.posterior = math.exp(rslts.llf)*rslts.prior
-
-    rslts.visits = 0
+    posterior = math.exp(fit.llf)*prior
         
-    return rslts
-
-# Overwriting existing fit methods
-for class_ in [sm.OLS, sm.GLS, sm.WLS, sm.Probit, sm.Logit, sm.MNLogit]:
-    class_.fit_for_ma = fit_for_ma
+    return np.hstack((posterior, fit.rsquared, fit.params, fit.bse, par_rsquared.flat))

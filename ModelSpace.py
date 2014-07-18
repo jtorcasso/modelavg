@@ -1,7 +1,8 @@
 import warnings
 
+from pandas import DataFrame, Series
 import numpy as np
-import statsmodels.api as sm
+from Models import linear
 from scipy.misc import comb
 
 class Context(object):
@@ -44,177 +45,91 @@ class ModelSpace(Context):
 
     Parameters
     ----------
-    endog : np.ndarray
-        endogenous data
-    exog : np.ndarray
-        exogenous, or explanatory data. Should not contain a constant
+    data : array-like
+        data to be used in the model, the first column is the 
+        endogenous variable, the rest are exogenous
+    model : function
+        function taking data and keyword arguments (kwargs)
+        and returns an array of coefficient estimates
+    kwargs : keyword arguments
+        keyword arguments to pass onto the model
+    keep : list
+        list of columns in data to always keep in the model, specified
+        by horizontal position, starting at 0
+
     
     ** Attributes **
  
-    endog : np.ndarray
-        data to predict using exog and model
-    exog : np.ndarray
-        data used to predict endog
     K : int
         number of possible regressors
-    model : model class
-        a model class to estimate
-    model_kwargs : keyword arguments
-        keyword arguments to pass onto the model class
-    fit_kwargs : keyword arguments
-        keyword arguments to pass onto the model class's fit method
-    attributes : dict
-        dictionary of attributes to store from the model's result
-        class, which is grabbed when fitting the model
-    K : int
-        total number of regressors to choose from
-    max_models : int
+    maxm : int
         total number of possible models given number of allowed regressors
         and K
-    regressors : array-like
+    k : array-like
         allowable number of regressors
-    self.prior_type: str
-        type of model prior
+    file : str
+        path of file for saving results on disk
     '''
 
-    def __init__(self, endog, exog, model=sm.OLS):
-        self._handle_data(endog, exog)
-        self._handle_model(model)
-        self.model_kwargs = {}
-        self.fit_kwargs = {}
-        self.attributes = {'posterior':0, 'prior':0, 'par_rsquared':1, 'bse':1, 'bic':0, 
-                       'aic':0, 'rsquared':0, 'rsquared_adj':0, 'params':1, 'visits':0,
-                       'nobs':0}
-        self.K = exog.shape[1]
-        self.max_models = 2**(exog.shape[1])
-        self.regressors = np.arange(0,exog.shape[1])
-        self.prior_type = 'uniform'
-    
-    def set_prior_type(self, prior_type):
-        '''set prior for model
-        
-        Parameters
-        ----------
-        prior_type : str
-            'uniform' or 'collinear adjusted dilution'
-        '''
-        self.prior_type = prior_type
-        
-    def set_model_kwargs(self, **kwargs):
-        '''sets the model's keyword args
-        
-        Parameters
-        ----------
-        kwargs : keyword arguments
-            keyword arguments to use when instantiating model
-        '''
-        self.model_kwargs = kwargs
+    def __init__(self, data, k=None, keep=[0, 1], model=linear, kwargs={}):
 
-    def set_fit_kwargs(self, kwargs):
-        '''sets the model fit method's keyword args
-        
-        Parameters
-        ----------
-        kwargs : keyword arguments
-            keyword arguments to use when fitting the model
-        '''
-        self.fit_kwargs = kwargs
-
-    def set_attributes(self, attributes):
-        '''sets the attributes to retrieve from model fit
-
-        Parameters
-        ----------
-        attributes : dict
-            dictionary, keys are attribute names, values are 1 if there attribute is 
-            related to the regression coefficients
-        '''
-        self.attributes = attributes
-
-    def set_regressors(self, min_regressors, max_regressors):
-        '''sets the minimum and maximum number of regressors to consider
-
-        Parameters
-        ----------
-        min_regressors : int
-            minimum number of regressors for sampled models
-        max_regressors : int
-            maximum number of regressors for sampled models
-        '''
-        if (not isinstance(min_regressors, int)) | (not isinstance(max_regressors, int)):
-            raise ValueError('min and max number of regressors must be integers')
-        if min_regressors > max_regressors:
-            raise ValueError('min number of regressors greater than max number')
-        self.regressors = np.arange(min_regressors, max_regressors+1)
-        sizes = [comb(self.K, k) for k in self.regressors]
-        self.max_models = int(sum(sizes))
-
-    def _handle_model(self, model):
-        '''handles the model
-
-        Parameters
-        ----------
-        model : a model class
-            a model class, must take endog and exog as parameters
-        '''
+        if not set([0,1]).issubset(set(keep)):
+            raise ValueError('keep should include [0, 1]')
+        if k is not None:
+            assert min(k) >= len(keep)
+            
+        self.data = self._handle_data(data)
+        self.keep = tuple(keep)
+        self.choices = np.array([i for i in xrange(data.shape[1]) if i not in keep])
         self.model = model
+        self.kwargs = kwargs
+        self.file = 'results.h5'
+        self._build(k)
+
+    @staticmethod
+    def _handle_data(data):
+        '''handles the data'''
+
+        if not isinstance(data, np.ndarray):
+            raise ValueError('Data should be NumPy Array')
+
+        if not len(data.shape) == 2:
+            raise ValueError('Data should be two dimensional')
+
+        if data[:,1].std() != 0:
+            raise ValueError('column at index 1 should be constant')
+
+        return data
+
+    def _build(self, k):
+        '''constructs model space parameters base on given attributes'''
+
+        self.K = self.data.shape[1] - len(self.keep)
+        self.k = np.arange(1, self.K+1, 1) if k is None else np.array(k)
+        assert self.k.max() <= self.K
+        self.maxm = int(sum([comb(self.K, i) for i in self.k]))
+
+    def save_as(self, fname):
+        '''save results to filename
+
+        Parameters
+        ----------
+        fname : str
+            filename to save as, may be absolute path
+        '''
+
+        if '.h5' != fname[-3:]:
+            fname += '.h5'
+
+        self.file = fname
     
-    def _handle_data(self, endog, exog):
-        '''handles the data
-        
-        Parameters
-        ----------
-        endog : np.ndarray
-            2-d array of shape (-1,1)
-        exog : np.ndarray
-            2-d array of shape (-1,K), does not contain constants
-        '''
-        
-        if not min(exog.std(axis=0)) > 0:
-            raise ValueError('Data contains column with too little variation') 
-        if endog.shape[0] != exog.shape[0]:
-            raise ValueError('exog and endog data not of same length')
-        
-        self.exog = sm.add_constant(exog, prepend=True)
-        self.endog = endog
-        self.K = exog.shape[1]
-
-    def fit(self, regressors):
-        '''fits the model on the specified regressors
+    def fit(self, columns):
+        '''fits the model with the specified columns
 
         Parameters
         ----------
-        regressors : array-like
-            list or array of regressors (columns in exog)
-        kwargs : keyword arguments
-            arguments to pass onto the model's fit method
+        columns : array-like
+            list or array of column numbers in data
         '''
-        
-        model = self.model(endog=self.endog, exog=self.exog[:,regressors], \
-                            missing='drop', **self.model_kwargs)
-        
-        # Quality
-        if len(model.endog) - model.exog.shape[1] < 5:
-            warnings.warn('Model has fewer than 5 degrees of freedom')
-        
-        rslts = model.fit_for_ma(self.prior_type, **self.fit_kwargs)
-        
-        # Assigning assumed values, based on model selected by regressors
-        if self.model == sm.MNLogit:
-            for attr in self.attributes:
-                if self.attributes[attr]:
-                    values = getattr(rslts, attr)
-                    values_ = np.zeros((self.exog.shape[1],2))
-                    values_[regressors] = values
-                    values = values_
-                    setattr(rslts, attr, values)
-        else:
-            for attr in self.attributes:
-                if self.attributes[attr]:
-                    values = getattr(rslts, attr)
-                    values_ = np.zeros(self.exog.shape[1])
-                    values_[regressors] = values
-                    values = values_
-                    setattr(rslts, attr, values)
-                
-        return rslts
+
+        return self.model(data=self.data[:, columns], **self.kwargs)

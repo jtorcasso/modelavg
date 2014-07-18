@@ -44,6 +44,7 @@ from __future__ import print_function, division
 import random
 import multiprocessing as mp
 import itertools
+import tables
 
 # Third Party
 import numpy as np
@@ -51,39 +52,61 @@ import pandas as pd
 import statsmodels.api as sm
 import matplotlib.pylab as plt
 
-from ModelSpace import *
+from ModelSpace import ModelSpace
 
-def _get_result(columns):
+
+def _get_result(cols):
     '''obtain model results
 
     Parameters
     ----------
-    columns : list
+    cols : list
         columns in data
 
     Returns
     -------
-    rslt : dict
+    rslt : tuple
         column-result pair
     '''
 
     model_space = modelcontext()
+    keep = model_space.keep
 
-    return (str(columns), model_space.fit(sorted(columns)))
+    return (cols, model_space.fit(sorted(keep + cols)))
 
 def SampleAll():
     '''samples from all of the models'''
 
     model_space = modelcontext()
-    sample = {}
-    regressors = model_space.regressors
+    allowed = model_space.k
+    choices = model_space.choices
+    keep = model_space.keep
     K = model_space.K
-    cols = itertools.chain.from_iterable(iter(itertools.combinations(xrange(1,K+1),k) \
-                                          for k in regressors))
-    for c in cols:
-        sample.update({str(c):model_space.fit(sorted(c))})
+    maxm = model_space.maxm
+    fname = model_space.file
 
-    return sample
+    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+1) \
+                                          for k in allowed))
+
+    num = len(keep) - 1 + len(choices)
+    hfile = tables.open_file(fname, 'w')
+    cell = tables.Atom.from_kind('float', 8)
+    results = hfile.createArray(hfile.root, 'ResultArray', 
+        shape=(maxm, 2 + 3*num), atom=cell)
+
+    for i,c in enumerate(cols):
+        fit = model_space.fit(sorted(keep + c))
+        results[i, [0, 1]] = fit[[0, 1]]
+        rlen = len(c) + len(keep) - 1
+        for j in [0, 1, 2]:
+            results[i, 1 + j*num + np.array(keep[1:] + c)] = fit[2 + rlen*j:2 + rlen*(j+1)]
+
+    results[:, 0] = results[:, 0]/results[:, 0].sum()
+    results[:] = results[(-results[:,0]).argsort(), :]
+
+    results.flush()
+
+    return hfile
 
 def pSampleAll(threads=2):
     '''samples from all models in parallel
@@ -100,28 +123,51 @@ def pSampleAll(threads=2):
     '''
 
     model_space = modelcontext()
-    sample = {}
-    regressors = model_space.regressors
+    allowed = model_space.k
+    choices = model_space.choices
+    keep = model_space.keep
     K = model_space.K
+    maxm = model_space.maxm
+    fname = model_space.file
 
     p = mp.Pool(threads)
 
-    cols = itertools.chain.from_iterable(iter(itertools.combinations(xrange(1,K+1),k) \
-                                          for k in regressors))
-    sample = dict(p.map(_get_result, cols))
-
+    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+1) \
+                                          for k in allowed))
+    
+    # Pooling Results
+    mapped = iter(p.map(_get_result, cols))
     p.close()
     p.join()
 
-    return sample
+    # Saving Results
+    num = len(keep) - 1 + len(choices)
+    hfile = tables.open_file(fname, 'w')
+    cell = tables.Atom.from_kind('float', 8)
+    results = hfile.createArray(hfile.root, 'ResultArray', 
+        shape=(maxm, 2 + 3*num), atom=cell)
 
-def random_draw(num_regressors, K):
+    for i, (c, fit) in enumerate(mapped):
+        results[i, [0, 1]] = fit[[0, 1]]
+        rlen = len(c) + len(keep) - 1
+        for j in [0, 1, 2]:
+            results[i, 1 + j*num + np.array(keep[1:] + c)] = fit[2 + rlen*j:2 + rlen*(j+1)]
+
+    results[:, 0] = results[:, 0]/results[:, 0].sum()
+    results[:] = results[(-results[:,0]).argsort(), :]
+
+    results.flush()
+
+    return hfile
+
+def random_draw():
     '''draws a set of regressors at random
     
     Parameters
     ----------
-    num_regressors : array-like
-        number of regressors to go in model
+    choices : array-like
+        choices for the number of regressors to go
+        in model
     K : int
         total number of regressors to select from
     
@@ -130,82 +176,26 @@ def random_draw(num_regressors, K):
     draw : list
         set of regressors
     '''
-    k = np.random.choice(num_regressors)
-    
-    cols = sorted(np.random.choice(xrange(1, K+1), size=k, replace=False))
-    
-    return [0] + cols
-
-def RandomSample(draws, seed=1234):
-    '''draws a random sample from ModelSpace in current context
-    
-    Parameters
-    ----------
-    draws : int
-        number of draws
-    seed : int
-        seed number for random numbers
-    
-    '''
-    model_space = modelcontext()
-    if draws >= model_space.max_models:
-        return SampleAll()
-
-    np.random.seed(seed)
-    sample = {}
-    while len(sample) < draws:
-        draw = random_draw(model_space.regressors, model_space.K)
-        sample.update({str(draw):model_space.fit(draw)})
-    
-    return sample
-        
-def pRandomSample(draws, seed=1234, threads=1):
-    '''parallel random sampler
-    
-    Parameters
-    ----------
-    draws : int
-        number of draws in each thread
-    seed : int
-        seed number for random numbers
-    threads : int
-        number of threads to spawn for sampling
-    
-    Notes
-    -----
-    will create random sample of models for `draws` number
-    of draws on each thread
-    
-    '''
 
     model_space = modelcontext()
-    if draws >= model_space.max_models:
-        return pSampleAll(threads)
+    allowed = model_space.k
+    choices = model_space.choices
+    keep = model_space.keep
 
-    argset = zip([draws]*threads, [seed+i for i in range(threads)])
+    k = np.random.choice(allowed)
     
-    p = mp.Pool(threads)
+    cols = tuple(np.random.choice(choices, size=k-len(keep)+1, replace=False))
     
-    jobs = [p.apply_async(RandomSample, args) for args in argset]
-    samples = [j.get() for j in jobs]
-    
-    sample = {}
-    for s in samples:
-        sample.update(s)
-    
-    p.close()
-    
-    return sample
+    return sorted(keep + tuple(cols))
 
-def mcmc_draw(last_draw, model_space, cache={}):
+
+def mcmc_draw(last_draw):
     '''moves to next model in markov chain sampler for model space
     
     Parameters
     ----------
     last_draw : list
         set of regressors from previous draw
-    model_space : model space instance
-        the model space
     cache : dict
         dictionary to store regression results
     
@@ -214,47 +204,32 @@ def mcmc_draw(last_draw, model_space, cache={}):
     draw : list
         set of regressors
     '''
+
+    model_space = modelcontext()
+    allowed = model_space.k
+    choices = model_space.choices
+    keep = model_space.keep
     K = model_space.K
-    num_regressors = model_space.regressors    
+    maxm = model_space.maxm
+    fname = model_space.file
     
-    if last_draw is None:
-        regressors = random_draw(num_regressors, K)
-        rslts = model_space.fit(regressors)
-        return regressors, rslts
-    
-    width = K + 1
+    width = len(keep) + len(choices)
     prev = np.zeros(width)
     prev[last_draw] = 1
-    prev = prev.reshape((-1,1))
+    prev = prev.reshape((-1, 1))
     
-    neighbors = abs(np.diag(np.ones(width)) - prev)[:,1:]
-    
-    neighbors = neighbors[:,np.any([neighbors.sum(axis=0) == i \
-                    for i in num_regressors], axis=0)]
-    
-    neighbors = pd.DataFrame(neighbors)
+    neighbors = abs(np.diag(np.ones(width)) - prev)[:, choices]
+    neighbors = neighbors[:, np.any([neighbors.sum(axis=0) == i+1
+                    for i in allowed], axis=0)]
     
     draw = random.choice(xrange(neighbors.shape[1]))
     
-    proposal = list(neighbors[draw][neighbors[draw]==1].index)
+    proposal = sorted(np.arange(neighbors.shape[0])[neighbors[:, draw] == 1])
     
-    
-    if str(proposal) in cache:
-        rslts = cache[str(proposal)]
-    else:
-        rslts = model_space.fit(proposal)
-    
-    if cache[str(last_draw)].posterior == 0:
-        prob = 1
-    else:
-        prob = min(1, rslts.posterior/cache[str(last_draw)].posterior)
-    if np.random.choice([True, False], p=[prob, 1 - prob]):
-        return proposal, rslts
-    else:
-        rslts = cache[str(last_draw)]
-        return last_draw, rslts
+    return proposal    
 
-def MCMC(visits, burn=0, thin=1, seed=1234):
+
+def MCMC(visits, burn=0, thin=1, kick=0., seed=1234):
     '''markov chain monte carlo sampler for model space
     
     Parameters
@@ -265,11 +240,23 @@ def MCMC(visits, burn=0, thin=1, seed=1234):
         number of visits to burn from beginning of chain
     thin : int
         related to fraction of visits kept in chain
+    kick : float
+        minimum value for transition probability
     seed : int
         seed for random number
     '''
+
+    assert (kick <= 1) & (kick >= 0)
+
     model_space = modelcontext()
-    if visits >= model_space.max_models:
+    allowed = model_space.k
+    choices = model_space.choices
+    keep = model_space.keep
+    K = model_space.K
+    maxm = model_space.maxm
+    fname = model_space.file
+
+    if visits >= maxm:
         return SampleAll()
 
     np.random.seed(seed)        
@@ -279,27 +266,69 @@ def MCMC(visits, burn=0, thin=1, seed=1234):
     if thin < 1:
         raise ValueError('thin must be an integer 1 or greater')
 
-    cache = {}
-    last_draw = None
-    num_visits = 0
-    while num_visits < visits:
+    # Saving Results
+    num = len(keep) - 1 + len(choices)
+    hfile = tables.open_file(fname, 'w')
+    cell = tables.Atom.from_kind('float', 8)
+    results = hfile.createArray(hfile.root, 'ResultArray', 
+        shape=(visits, 2 + 3*num), atom=cell)
 
-        regressors, rslts = mcmc_draw(last_draw, model_space, cache)
-        cache.update({str(regressors):rslts})
-        last_draw = regressors
-        num_visits += 1
+    # Obtaining first draw at random
+    last_draw = random_draw()
+    fit = model_space.fit(last_draw)
+    results[0, [0, 1]] = fit[[0, 1]]
+    rlen = len(last_draw) - 1
+    for j in [0, 1, 2]:
+        results[0, 1 + j*num + np.array(last_draw[1:])] = fit[2 + rlen*j:2 + rlen*(j+1)]
 
-        if num_visits <= burn:
-            continue
-        elif num_visits == burn:
-            cache = {}
-            continue
-        if (num_visits - burn)%thin == 0:
+    for i in xrange(1, visits):
+
+        print('visit {}'.format(i))
+
+        accepted = False
+
+        while not accepted:
+
+            proposal = mcmc_draw(last_draw)
+
+            fit = model_space.fit(proposal)
             
-            rslts.visits += 1
-            
-    
-    return {key:cache[key] for key in cache if cache[key].visits > 0}
+            if results[i - 1, 0] == 0:
+                prob = 1
+            else:
+                prob = min(1, max(kick, fit[0]/results[i - 1, 0]))
+
+            if np.random.choice([True, False], p=[prob, 1 - prob]):
+
+                results[i, [0, 1]] = fit[[0, 1]]
+                rlen = len(proposal) - 1
+                for j in [0, 1, 2]:
+                    results[i, 1 + j*num + np.array(proposal[1:])] = fit[2 + rlen*j:2 + rlen*(j+1)]
+
+                last_draw = proposal
+
+                accepted = True
+
+
+    # Burning and thinning out visits in the chain
+    if (burn > 0) or (thin > 1):
+        results.rename('ResultArrayFull')
+        
+        truncated = results.copy(newname='ResultArray', start=burn, 
+            stop=results.shape[0], step=thin)
+        
+        results[:, 0] = results[:, 0]/results[:, 0].sum()
+        results[:] = results[(-results[:,0]).argsort(), :]
+
+        results = truncated     
+
+    # Normalizing the posterior
+    results[:, 0] = results[:, 0]/results[:, 0].sum()
+    results[:] = results[(-results[:,0]).argsort(), :]
+
+    hfile.flush()
+
+    return hfile
     
 def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
     '''parallel markov chain monte carlo sampler for model space
@@ -325,7 +354,7 @@ def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
     '''    
 
     model_space = modelcontext()
-    if visits*threads >= model_space.max_models:
+    if visits >= maxm:
         return pSampleAll(threads)
 
     argset = zip([visits]*threads, [burn]*threads, [thin]*threads, 
@@ -357,387 +386,117 @@ def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
   
 
 class Trace(object):
-    '''store and aggregate results from a sample of models
+    '''perform basic analysis of the estimated models
     
     Parameters
     ----------
-    results : dictionary
-        keys are character strings which are attributes of 
-        a model's result class, values are (mostly) DataFrames
-        which contain this attribute for all models considered
-
-    ** Attributes **
-    
-    results : dictionary
-        keys are strings, value is a pd.DataFrame
-    maxModels : int
-        total number of possible models
-    size : int
-        total number of models present in the trace
+    array : tables.array.Array
+        a tables array
     '''
     
-    def __init__(self, sample):
-        self.size = len(sample)
-        self.ids = sample.keys()
-        self.ids.sort()
-        self.id_keys = {j:i for i,j in enumerate(self.ids)}
-        self.results = self._handle_sample(sample, modelcontext())
-        self.maxModels = modelcontext().max_models
+    def __init__(self, array):
+        self.array = array
 
-    def _handle_sample(self, sample, model_space):
-        '''organizes results from a sample of models into pandas objects
-    
-        Parameters
-        ----------
-        sample : dict
-            dictionary from sampling functions
-        '''
-        
-        formatted_results = {}        
-        for attr in model_space.attributes:
-            formatted_results[attr] = np.array(\
-                    [getattr(sample[m],attr) for m in self.ids])
-        
-        # Normalizing
-        for attr in ['posterior', 'visits', 'prior']:
-            if attr in formatted_results:
-                if all(formatted_results[attr]) == 0:
-                    formatted_results[attr] = 1/(np.ones(self.size)*self.size)
-                else:
-                    formatted_results[attr] /= formatted_results[attr].sum()
-        
-        return formatted_results
+    def mean(self, key, weight=True):
+        '''obtain average estimates
 
-    def get_raw_result(self, key):
-        '''distribution of results
-        
-        Parameters
+        Parameters 
         ----------
         key : str
-            result key
-        
-        Returns
-        -------
-        params : pd.DataFrame or pd.Series
-            distrubitions of parameters across models
+            'params', 'par_rsquared', 'rsquared', 'bse'
+        weight : bool
+            if True (default), weights by the posterior 
+            model probabilities
+
+        Return
+        ------
+        mean : array-like
+            the mean of the values
         '''
-        
-        return self.results[key]
-    
-    def best_model(self, over='posterior'):
-        '''finds the set of predictors with which maximizes
-        the parameter specified by `over`
-        
-        Parameters
-        ----------
-        over : str
-            result key, specifying a particular attribute of the
-            model, usually some form of model fit
-        
-        Returns
-        -------
-        Xcols : tuple
-            columns in data
-        '''
-        
-        return self.ids[pd.DataFrame(self.results[over])[0].idxmax()]
-    
-    def _handle_result(self, key, index=None, column=None):
-        '''statistic for a model
-        
-        Parameters
-        ----------
-        key : str
-            result key
-        index : str
-            index in result dataframe, identifies a model
-            if None, returns across all indices
-            ex. '0,1,2,3'
-        column : int
-            column number in data frame, identifies a parameter
-            if None, returns results across all columns
-            
-        Returns
-        -------
-        params : array-like
-            estimated parameter(s)
-        '''
-        if (column is None) & (index is None):
-            rslts = self.results[key]
-        elif column is None:
-            rslts = self.results[key][self.id_keys[index]]
-        elif index is None:
-            rslts = self.results[key][:,column]
+
+        if key in ['params', 'par_rsquared']:
+
+            if weight:
+                return np.average(self[key], weights=self['posterior'], axis=0)
+            else:
+                return np.average(self[key], axis=0)
+
+        elif key == 'bse':
+
+            mean_params = self.mean(key='params', weight=weight)
+
+            if weight:
+                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['params']), 
+                    weights=self['posterior'], axis=0) - np.square(mean_params))
+            else:
+                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['params']), 
+                    axis=0) - np.square(mean_params))
+
+        elif key == 'rsquared':
+
+            if weight:
+                return np.average(self[key], weights=self['posterior'])
+            else:
+                return np.average(self[key])
         else:
-            rslts = self.results[key][:,column][self.id_keys[index]]
-        
-        if 1 in rslts.shape:
-            rslts = rslts.flatten()
-            if 1 in rslts.shape:
-                rslts = rslts[0]
-        return rslts
-    
-    def average(self, key=None, params=None, weight=None):
-        '''computes average over set of models
-        
-        Parameters
-        ----------
-        key : str
-            result key
-        params : pandas object
-            must have as index model identifiers, e.g.
-            a string '0,1,2'
-        weight : str or None
-            if str, specifies an attribute to use as a weight
-            
-        Returns
-        -------
-        average : array-like or float
-            weighted averages of parameters across models
-        
-        Notes
-        -----
-        E[B|Data] = B_1*Pr(M_1|Data) + ... + B_K*Pr(M_K|Data)
-        '''
-        
-        if (key is not None) & (params is None):
-            params = self._handle_result(key)
-        elif (params is not None):
-            assert (isinstance(params, np.ndarray))
+            raise KeyError('key {} not found'.format(key))
+
+    def __getitem__(self, key):
+
+        # Number of regressors to choose from
+        plen = (self.array.shape[1] - 2)/3
+
+        if key == 'params':
+            return self.array[:, 2:plen + 2]
+        elif key == 'bse':
+            return self.array[:, 2 + plen:2*plen + 2]
+        elif key == 'par_rsquared':
+            return self.array[:, 2 + 2*plen:3*plen + 2]
+        elif key == 'rsquared':
+            return self.array[:, 1]
+        elif key == 'posterior':
+            return self.array[:, 0]
         else:
-            raise ValueError('Must specify key or params')
-        
-        if weight is not None:
-            weight = self._handle_result(weight)
-        
-        if params.ndim == 1:
-            return np.average(params, weights=weight)
-        else:
-            return np.average(params, weights=weight, axis=0)
-        
-    def bma_coeff_std(self, weight):
-        '''computes standard deviation of BMA coefficients
-        
-        Returns
-        -------
-        std : np.ndarray
-            ma estimates of standard deviation
-        
-        Notes
-        -----
-        Var[B|Data] = (Var[B|Data,M_1] + E[B|Data,M_1]^2)Pr(M_1|Data) + ... +
-              (Var[B|Data,M_K] + E[B|Data,M_K]^2)Pr(M_K|Data) -
-              E[B|Data]^2
-        '''
-        
-        assert ('params' in self.results)
-        assert ('bse' in self.results)
-        assert (weight in self.results)        
-        
-        coeff = self.average('params', weight=weight)
-        
-        var = np.square(self._handle_result('bse'))
-        
-        coeff_square = np.square(self._handle_result('params'))
-        
-        return np.sqrt(self.average(params=(var+coeff_square),weight=weight) - np.square(coeff))
-        
-    
-    def plot(self, key, weight=None, col=None):
-        '''plot results across models
-        
-        Parameters
-        ----------
-        key : str
-            result key
-        weight : str
-            the weight to use for the plot
-        col : int or None
-            if None, key must specify a result with a single
-            value for each model, if int, 
-            specifies a column (coefficient number)
-        '''
-        
-        names = {'rsquared_adj':'Adjusted R-Squared',
-                 'rsquared':'R-Squared',
-                 'params':'Estimated Regression Coefficient',
-                 'par_rsquared':'Partial R-Squared of Predictor'}
-        
-        if key in ['visits', 'posterior', 'prior']:
-            
-            self._plot_weight(key)
-        
-        elif key in ['rsquared_adj', 'rsquared']:
-            
-            self._plot_hist(key, names[key], weight)
-        
-        elif key in ['params', 'par_rsquared']:
-            
-            if not isinstance(col, int):
-                raise ValueError("'col' must be an integer")
-                
-            self._plot_hist(key, names[key], weight, col)
-            
-    def _plot_weight(self, key, numModels=30):
+            raise KeyError('key {} not found'.format(key))
+
+    def plot_posterior(self, limit=30, fname=None, fmat='eps'):
         '''plots posterior across models
         
         Parameters
         ----------
-        numModels : int
-            number of models to plot statistics for
+        limit : int
+            the top most models to plot
+        fname : str
+            filename to save the figure, default is None and
+            shows the figure
         '''
-        weight = list(self._handle_result(key))
-        weight.sort(reverse=True)
-    
-        plt.bar(left=range(1, len(weight[:numModels])+1), \
-                height=weight[:numModels], color='k')
+        
+        posterior = self['posterior'][:limit]
+
+        plt.bar(left=range(1, len(posterior) + 1), 
+                height=posterior, color='k')
         
         plt.xlabel('Model by Rank Order', fontsize=15)
-        plt.ylabel('Weight ({})'.format(key), fontsize=15)
+        plt.ylabel('Posterior Probability', fontsize=15)
         
         plt.tick_params(axis='both', labelsize=15, \
                     top='off', right='off')
                     
         plt.text(x=plt.xlim()[1]*1./2, y=plt.ylim()[1]*8.5/10, \
-                s=('{0}{1}\n{2}{3}\n{4}{5}'.format(\
-                'Models Shown:       ', numModels, \
+                s=('{}{}\n{}{:,.0f}'.format(\
+                'Models Shown:       ', min(self.array.shape[0], limit), \
                 'Models Estimated:  ', \
-                intWithCommas(self.size), \
-                'Total Models:           ', \
-                intWithCommas(self.maxModels))),
+                self.array.shape[0])),
                 fontsize=10)
-                
-    
-    def _plot_hist(self, key, xlabel, weight, col=None):
-        '''plots histogram of parameter across models
-        
-        Parameters
-        ----------
-        key : str
-            result key
-        '''
-        
-        params = self._handle_result(key) \
-                if col is None else self._handle_result(key, column=col)
-        if weight is not None:
-            weights = self._handle_result(weight)
-        else:
-            weights = None    
-        
-        assert(params.ndim == 1)
-        assert len(params) == self.size
-        
-        plt.hist(params, 30, \
-            weights = weights, color='0.75')
-    
-        plt.xlabel(xlabel, fontsize=15)
-        
-        plt.ylabel('Frequency', fontsize=15)
-        
-        xlim = plt.xlim()    
-        xpad = 0.1*(xlim[1] - xlim[0])
-        plt.xlim(xlim[0]-xpad, xlim[1]+xpad)
-        
-        plt.tick_params(axis='both', labelsize=15, \
-                        top='off', right='off')
-        
-        plt.text(x=plt.xlim()[1]*1./2, y=plt.ylim()[1]*10.5/10, \
-                s=('{0}{1}\n{2}{3}'.format(\
-                'Models Estimated:  ', \
-                intWithCommas(self.size), \
-                'Total Models:           ', \
-                intWithCommas(self.maxModels))),
-                fontsize=10)        
-        
-        
-    def format_results(self, best=False, weight_key='posterior'):
-        '''summarizes regression coefficients and model fit
-        
-        Parameters
-        ----------
-        best : bool
-            if True, formats results for best model
-            if False, formats results for average over models
-        
-        Returns
-        -------
-        string : str
-            formatted string representation of results
-        '''
-        model = self.best_model(weight_key)
-        weight = '{0:.3f}'.format(self._handle_result(weight_key, index=model))
-        weight = 'Weight ({}): '.format(weight_key) + weight if best else ''
-        
-        if best:
-            coeff = self._handle_result('params', index=model)
-            r2 = self._handle_result('par_rsquared', index=model)
-        else:
-            coeff = self.average('params',weight=weight_key)
-            r2 = self.average('par_rsquared',weight=weight_key)
-        
-        # Header
-        string = 'Best Model: {}'.format(model) if best else 'Bayesian Model Average'
-        string += '\n{}'.format(weight)
-        string += '' if best else '{} of {} Models Considered'.format(\
-                        self.size, self.maxModels)
-        string += '\n\nVariable Coeff Partial-R2\n' + '-'*25 + '\n'
-        
-        # Table
-        for i in xrange(len(coeff)):
-            string += 'B{0:<8}{1:>6}{2:>9}\n'.format(\
-            i,'{0:.3f}'.format(coeff[i]),'{0:.3f}'.format(r2[i]))
-        
-        # Footer
-        string += '-'*25 + '\nTotal R-Squared: {0:0.3f}'.format(r2.sum())
-        
-        return string
-        
-    def summary(self,weight='posterior'):
-        '''prints summary of results
-        '''
-        
-        print("\n\n")
-        print(self.format_results(best=True,weight_key=weight))
-        print("\n\n")
-        print(self.format_results(weight_key=weight))
-        
-def intWithCommas(x):
-    """return `x` formatted as long int with commas
-    
-    Parameters
-    ----------
-    x : int
-        integer to be converted
-    
-    Returns
-    -------
-    strX : str
-        string rep of x
-    
-    Example
-    -------
-    x = 1003949 would return '1,003,949'
-	
-    """
 
-    if type(x) not in [type(0), type(0L)]:
-	
-        raise TypeError("Parameter must be an integer.")
-		
-    if x < 0:
-	
-        return '-' + intWithCommas(-x)
-		
-    result = ''
-	
-    while x >= 1000:
-	
-        x, r = divmod(x, 1000)
-		
-        result = ",%03d%s" % (r, result)
-		
-    return "%d%s" % (x, result)
-        
+        if fname is None:
+            plt.show()
+        else:
+            plt.savefig('{}.{}'.format(fname, fmat), bbox_inches='tight')
+            plt.clf()
+            plt.close()
+                
+            
 # Test Code
 
 if __name__ == '__main__':
@@ -764,29 +523,44 @@ if __name__ == '__main__':
 
     Y = np.dot(sm.add_constant(X[:,:5], prepend=True), B) + e
 
-    with ModelSpace(Y,X) as model:
-        model.set_regressors(3,7)
-        model.set_prior_type('collinear adjusted dilution')
+    data = np.hstack((Y,sm.add_constant(X)))
+
+    kwargs = {'prior_type':'collinear adjusted dilution'}
+    with ModelSpace(data[:,:10], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
         
-        print(model.regressors)
-        print(model.max_models)
-        start = time.time()
-        sample = pSampleAll(4)
-        trace = Trace(sample)
-        trace.summary()
-        mcmc = pMCMC(visits=10000, burn=1000, thin=2, seed=1234, threads=4)
-        print("Chain took {} seconds to run".format(time.time() - start))
-        trace = Trace(mcmc)
-        trace.summary()
-        plt.figure(1)
-        trace.plot('posterior')
-        plt.figure(2)
-        trace.plot('rsquared_adj', weight='posterior')
-        plt.figure(3)
-        trace.plot('params', weight='posterior', col=1)
-        plt.figure(4)
-        trace.plot('par_rsquared', weight='posterior', col=1)
-        plt.show()        
+        ResultTable = MCMC(40, burn=0, thin=1, kick=0.01, seed=1234)
+        trace = Trace(ResultTable.get_node('/ResultArray'))
+
+        print(trace.mean(key='params'))
+        print(trace.mean(key='rsquared'))
+        print(trace.mean(key='bse'))
+        print(trace.mean(key='par_rsquared'))
+
+        print(trace['params'][:10])
+
+        trace.plot_posterior()
+
+        ResultTable.close()
+        
+    #     print(model.regressors)
+    #     print(model.max_models)
+    #     start = time.time()
+    #     sample = pSampleAll(4)
+    #     trace = Trace(sample)
+    #     trace.summary()
+    #     mcmc = pMCMC(visits=10000, burn=1000, thin=2, seed=1234, threads=4)
+    #     print("Chain took {} seconds to run".format(time.time() - start))
+    #     trace = Trace(mcmc)
+    #     trace.summary()
+    #     plt.figure(1)
+    #     trace.plot('posterior')
+    #     plt.figure(2)
+    #     trace.plot('rsquared_adj', weight='posterior')
+    #     plt.figure(3)
+    #     trace.plot('params', weight='posterior', col=1)
+    #     plt.figure(4)
+    #     trace.plot('par_rsquared', weight='posterior', col=1)
+    #     plt.show()        
         
 #        model.set_prior_typ(prior_type='uniform')
 #        mcmc = pMCMC(visits=10000, burn=1000, thin=2, seed=1234, threads=4)
@@ -799,4 +573,3 @@ if __name__ == '__main__':
 #        sample = pRandomSample(draws=1000, seed=1234, threads=4)
 #        trace = Trace(sample)
 #        trace.summary()
-        
