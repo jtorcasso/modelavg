@@ -60,8 +60,6 @@ class ModelSpace(Context):
     
     ** Attributes **
  
-    K : int
-        number of possible regressors
     maxm : int
         total number of possible models given number of allowed regressors
         and K
@@ -101,10 +99,8 @@ class ModelSpace(Context):
     def _build(self, k):
         '''constructs model space parameters base on given attributes'''
 
-        self.K = self.data.shape[1] - len(self.keep)
-        self.k = np.arange(1, self.K+1, 1) if k is None else np.array(k)
-        assert self.k.max() <= self.K
-        self.maxm = int(sum([comb(self.K, i) for i in self.k]))
+        self.k = np.arange(1, len(self.choices)+1, 1) if k is None else np.array(k)
+        self.maxm = int(sum([comb(len(self.choices), i-len(self.keep)+2) for i in self.k]))
     
     def fit(self, columns):
         '''fits the model with the specified columns

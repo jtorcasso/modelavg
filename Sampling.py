@@ -151,6 +151,7 @@ def _process_results(table):
     sortedTable = table.copy(newname="Sorted", sortby='posterior', step=-1)
     table.remove()
     sortedTable.rename(tablename)
+    sortedTable.flush()
 
 
 def SampleAll(filename, tablename, groupname=''):
@@ -175,10 +176,9 @@ def SampleAll(filename, tablename, groupname=''):
     allowed = model_space.k
     choices = model_space.choices
     keep = model_space.keep
-    K = model_space.K
     maxm = model_space.maxm
 
-    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+1) \
+    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+2) \
                                           for k in allowed))
 
     num = len(keep) - 1 + len(choices)
@@ -220,12 +220,11 @@ def pSampleAll(filename, tablename, groupname='', threads=2):
     allowed = model_space.k
     choices = model_space.choices
     keep = model_space.keep
-    K = model_space.K
     maxm = model_space.maxm
 
     p = mp.Pool(threads)
 
-    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+1) \
+    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+2) \
                                           for k in allowed))
     
     # Pooling Results
@@ -272,7 +271,7 @@ def random_draw():
 
     k = np.random.choice(allowed)
     
-    cols = tuple(np.random.choice(choices, size=k-len(keep)+1, replace=False))
+    cols = tuple(np.random.choice(choices, size=k-len(keep)+2, replace=False))
     
     return sorted(keep + tuple(cols))
 
@@ -297,7 +296,6 @@ def mcmc_draw(last_draw):
     allowed = model_space.k
     choices = model_space.choices
     keep = model_space.keep
-    K = model_space.K
     maxm = model_space.maxm
     
     width = len(keep) + len(choices)
@@ -351,7 +349,6 @@ def MCMC(visits, filename, tablename, groupname='',
     allowed = model_space.k
     choices = model_space.choices
     keep = model_space.keep
-    K = model_space.K
     maxm = model_space.maxm
 
     if visits >= maxm:
@@ -509,18 +506,13 @@ class Trace(object):
     '''
     
     def __init__(self, table):
-        self.table = table
         self.data = self._load(table)
 
     @staticmethod
     def _load(table):
         '''loads the data on disk into memory'''
 
-        data = pd.DataFrame(
-            np.vstack([np.array(getattr(table.cols, c)) for c in table.colnames]).T,
-            columns = table.colnames)
-
-        data[[c for c in data.columns if c != 'id']] = data[[c for c in data.columns if c != 'id']].astype(float)
+        data = pd.DataFrame.from_records(table[:])
 
         return data
 
@@ -541,36 +533,16 @@ class Trace(object):
             the mean of the values
         '''
 
-        if key in ['param', 'prsquared']:
-
-            if weight:
-                return np.average(self[key], weights=self['posterior'], axis=0)
-            else:
-                return np.average(self[key], axis=0)
-
-        elif key == 'bse':
-
-            mean_params = self.mean(key='param', weight=weight)
-
-            if weight:
-                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['param']), 
-                    weights=self['posterior'], axis=0) - np.square(mean_params))
-            else:
-                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['param']), 
-                    axis=0) - np.square(mean_params))
-
+        if weight:
+            return self[key].mul(self['posterior'], axis='index').sum()
         else:
-
-            if weight:
-                return np.average(self[key], weights=self['posterior'])
-            else:
-                return np.average(self[key])
+            return self[key].mean()
 
 
     def __getitem__(self, key):
 
         if key in ['param', 'bse', 'prsquared']:
-            return self.data[[c for c in self.table.colnames if key in c]]
+            return self.data[[c for c in self.data.columns if key in c]]
         else:
             return self.data[key]
 
@@ -586,7 +558,7 @@ class Trace(object):
             shows the figure
         '''
         
-        posterior = self['posterior'][:limit]
+        posterior = self['posterior'].ix[:limit]
 
         plt.bar(left=range(1, len(posterior) + 1), 
                 height=posterior, color='k')
@@ -625,7 +597,7 @@ if __name__ == '__main__':
     import time
     import os
     
-    # np.set_printoptions(precision=3, suppress=True)
+    np.set_printoptions(precision=3, suppress=True)
 
     X = 10*np.random.randn(100, 5)
 
@@ -642,36 +614,27 @@ if __name__ == '__main__':
     data = np.hstack((Y,sm.add_constant(X)))
 
     kwargs = {'prior_type':'collinear adjusted dilution'}
-    with ModelSpace(data[:,:10], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
+    with ModelSpace(data[:,:20], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
         
         if os.path.exists('results.h5'):
             os.remove('results.h5')
 
         print(model.maxm)
-        ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
+        # ResultTable = SampleAll('results.h5', 'ResultTable')
+        # ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
         # ResultTable = MCMC(4000, 'results.h5', 'ResultTable', 
-        #     burn=0, thin=1, kick=0.01, seed=1234)
-        # ResultTable = pMCMC(4000, 'results.h5', 'ResultTable', threads=4, 
-        #     burn=0, thin=1, kick=0.01, seed=1234)
+        #     burn=1000, thin=1, kick=0.05, seed=1234)
+        ResultTable = pMCMC(4000, 'results.h5', 'ResultTable', threads=4, 
+            burn=1000, thin=1, kick=0.05, seed=1234)
 
-        trace = Trace(ResultTable.get_node('/ResultTable'))
-        
+        trace = Trace(ResultTable.root.ResultTable)
         print(trace.mean(key='param'))
-        a = trace['rsquared']
-        b= trace['posterior']
-        print(trace.data.dtypes)
-        print(a.dtype)
-        print(b.dtype)
-        print(np.average(a, weights=b))
         print(trace.mean(key='rsquared'))
         print(trace.mean(key='bse'))
         print(trace.mean(key='prsquared'))
+        print(trace.mean(key='param3'))
 
-        print(trace['param'][:10])
-        print(trace['id'][:10])
-        print(trace.get_data(['id', 'posterior'], stop=10))
-
-        trace.plot_posterior()
+        # trace.plot_posterior()
 
         ResultTable.close()
-        # os.remove('results.h5')
+        os.remove('results.h5')
