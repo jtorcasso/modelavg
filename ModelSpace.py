@@ -67,8 +67,6 @@ class ModelSpace(Context):
         and K
     k : array-like
         allowable number of regressors
-    file : str
-        path of file for saving results on disk
     '''
 
     def __init__(self, data, k=None, keep=[0, 1], model=linear, kwargs={}):
@@ -83,7 +81,6 @@ class ModelSpace(Context):
         self.choices = np.array([i for i in xrange(data.shape[1]) if i not in keep])
         self.model = model
         self.kwargs = kwargs
-        self.file = 'results.h5'
         self._build(k)
 
     @staticmethod
@@ -108,20 +105,6 @@ class ModelSpace(Context):
         self.k = np.arange(1, self.K+1, 1) if k is None else np.array(k)
         assert self.k.max() <= self.K
         self.maxm = int(sum([comb(self.K, i) for i in self.k]))
-
-    def save_as(self, fname):
-        '''save results to filename
-
-        Parameters
-        ----------
-        fname : str
-            filename to save as, may be absolute path
-        '''
-
-        if '.h5' != fname[-3:]:
-            fname += '.h5'
-
-        self.file = fname
     
     def fit(self, columns):
         '''fits the model with the specified columns

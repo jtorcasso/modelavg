@@ -74,52 +74,101 @@ def _get_result(cols):
 
     return (cols, model_space.fit(sorted(keep + cols)))
 
-def SampleAll():
-    '''samples from all of the models'''
-
-    model_space = modelcontext()
-    allowed = model_space.k
-    choices = model_space.choices
-    keep = model_space.keep
-    K = model_space.K
-    maxm = model_space.maxm
-    fname = model_space.file
-
-    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+1) \
-                                          for k in allowed))
-
-    num = len(keep) - 1 + len(choices)
-    hfile = tables.open_file(fname, 'w')
-    cell = tables.Atom.from_kind('float', 8)
-    results = hfile.createArray(hfile.root, 'ResultArray', 
-        shape=(maxm, 2 + 3*num), atom=cell)
-
-    for i,c in enumerate(cols):
-        fit = model_space.fit(sorted(keep + c))
-        results[i, [0, 1]] = fit[[0, 1]]
-        rlen = len(c) + len(keep) - 1
-        for j in [0, 1, 2]:
-            results[i, 1 + j*num + np.array(keep[1:] + c)] = fit[2 + rlen*j:2 + rlen*(j+1)]
-
-    results[:, 0] = results[:, 0]/results[:, 0].sum()
-    results[:] = results[(-results[:,0]).argsort(), :]
-
-    results.flush()
-
-    return hfile
-
-def pSampleAll(threads=2):
-    '''samples from all models in parallel
+def _create_table(filename, tablename, groupname, numcoeff):
+    '''creates table for results
 
     Parameters
     ----------
-    threads : int
-        number of processes to spawn
+    filename : str
+        filepath to save results
+    tablename : str
+        name of table to save
+    groupname : str
+        the group node for result storage
+    numcoeff : int
+        number of parameters, for calculating table's columns
+
+    Return
+    ------
+    hfile : tables file object
+        reference to on-disk storage of results
+    '''
+
+    fields = ['param', 'bse', 'prsquared']
+    hfile = tables.open_file(filename, 'a')
+
+    dt = np.dtype([('id', 'S40'), ('posterior', float), ('rsquared', float), 
+        ] + [('{}{}'.format(n, i), float) for n in fields for i in xrange(1, numcoeff+1)])
+    results = hfile.createTable('/{}'.format(groupname), tablename, dt, 
+        createparents=True)
+
+    return hfile
+
+def _append_result(table, numcoeff, fit, cols):
+    '''append a regression result to a table
+
+    Parameters 
+    -----------
+    table : pytables Table
+        regression results table for all models 
+    numcoeff : int
+        number of parameters
+    fit : array
+        regression results from single model
+    cols : list
+        columns in data fitted in model
+    '''
+
+    rslt = np.zeros(2 + numcoeff*3)
+    rslt[[0, 1]] = fit[[0, 1]]
+    rlen = len(cols) - 1
+    for j in [0, 1, 2]:
+        rslt[1 + j*numcoeff + np.array(cols[1:])] = fit[2 + rlen*j:2 + rlen*(j+1)]
+
+    table.append([(str(cols)[1:-1].replace(' ', ''),) + tuple(rslt)])
+
+def _process_results(table):
+    '''processes results
+
+    Parameters
+    ----------
+    table : tables.table.Table instance
+        table of all results
+    '''
+    tablename = table.name
+
+    # Normalizing the Posterior Model Probability
+    posterior = table.cols.posterior
+    expr = tables.Expr("sum(posterior)", uservars={"posterior":posterior})
+    psum = expr.eval()
+    expr = tables.Expr("posterior/psum", 
+        uservars={"posterior":posterior, "psum":psum})
+    expr.set_output(posterior)
+    expr.eval()
+
+    # Descending Sort on Posterior Model Probability
+    table.cols.posterior.createIndex(kind='full')
+    sortedTable = table.copy(newname="Sorted", sortby='posterior', step=-1)
+    table.remove()
+    sortedTable.rename(tablename)
+
+
+def SampleAll(filename, tablename, groupname=''):
+    '''samples from all of the models
+
+    Parameters
+    ----------
+    filename : str
+        filepath to save results
+    tablename : str
+        name of table to save
+    groupname : str
+        the group node for result storage
 
     Returns
     -------
-    sample : dict
-        column-rslt object pairs
+    hfile : pytables file
+        reference to on-disk storage
     '''
 
     model_space = modelcontext()
@@ -128,7 +177,51 @@ def pSampleAll(threads=2):
     keep = model_space.keep
     K = model_space.K
     maxm = model_space.maxm
-    fname = model_space.file
+
+    cols = itertools.chain.from_iterable(iter(itertools.combinations(choices, k-len(keep)+1) \
+                                          for k in allowed))
+
+    num = len(keep) - 1 + len(choices)
+    hfile = _create_table(filename, tablename, groupname, num)
+    resultTable = getattr(hfile.get_node('/{}'.format(groupname)), tablename)
+
+    for i,c in enumerate(cols):
+        fitcols = sorted(keep + c)
+        fit = model_space.fit(fitcols)
+        _append_result(resultTable, num, fit, fitcols)
+
+    _process_results(resultTable)
+
+    hfile.flush()
+
+    return hfile
+
+def pSampleAll(filename, tablename, groupname='', threads=2):
+    '''samples from all models in parallel
+
+    Parameters
+    ----------
+    filename : str
+        filepath to save results
+    tablename : str
+        name of table to save
+    groupname : str
+        the group node for result storage
+    threads : int
+        number of processes to spawn
+
+    Returns
+    -------
+    hfile : pytables file
+        reference to on-disk storage
+    '''
+
+    model_space = modelcontext()
+    allowed = model_space.k
+    choices = model_space.choices
+    keep = model_space.keep
+    K = model_space.K
+    maxm = model_space.maxm
 
     p = mp.Pool(threads)
 
@@ -142,21 +235,16 @@ def pSampleAll(threads=2):
 
     # Saving Results
     num = len(keep) - 1 + len(choices)
-    hfile = tables.open_file(fname, 'w')
-    cell = tables.Atom.from_kind('float', 8)
-    results = hfile.createArray(hfile.root, 'ResultArray', 
-        shape=(maxm, 2 + 3*num), atom=cell)
+    hfile = _create_table(filename, tablename, groupname, num)
+    resultTable = getattr(hfile.get_node('/{}'.format(groupname)), tablename)
 
     for i, (c, fit) in enumerate(mapped):
-        results[i, [0, 1]] = fit[[0, 1]]
-        rlen = len(c) + len(keep) - 1
-        for j in [0, 1, 2]:
-            results[i, 1 + j*num + np.array(keep[1:] + c)] = fit[2 + rlen*j:2 + rlen*(j+1)]
+        fitcols = sorted(keep + c)
+        _append_result(resultTable, num, fit, fitcols)
 
-    results[:, 0] = results[:, 0]/results[:, 0].sum()
-    results[:] = results[(-results[:,0]).argsort(), :]
+    _process_results(resultTable)
 
-    results.flush()
+    hfile.flush()
 
     return hfile
 
@@ -211,7 +299,6 @@ def mcmc_draw(last_draw):
     keep = model_space.keep
     K = model_space.K
     maxm = model_space.maxm
-    fname = model_space.file
     
     width = len(keep) + len(choices)
     prev = np.zeros(width)
@@ -229,13 +316,19 @@ def mcmc_draw(last_draw):
     return proposal    
 
 
-def MCMC(visits, burn=0, thin=1, kick=0., seed=1234):
+def MCMC(visits, filename, tablename, groupname='', **mcargs):
     '''markov chain monte carlo sampler for model space
     
     Parameters
     ----------
     visits : int
         number of visits in chain
+    filename : str
+        filepath to save results
+    tablename : str
+        name of table to save
+    groupname : str
+        the group node for result storage
     burn : int
         number of visits to burn from beginning of chain
     thin : int
@@ -244,7 +337,17 @@ def MCMC(visits, burn=0, thin=1, kick=0., seed=1234):
         minimum value for transition probability
     seed : int
         seed for random number
+
+    Returns
+    -------
+    hfile : pytables file
+        reference to on-disk storage
     '''
+    
+    burn = mcargs.get('burn', 0)
+    thin = mcargs.get('thin', 1)
+    kick = mcargs.get('kick', 0.)
+    seed = mcargs.get('seed', 1234)
 
     assert (kick <= 1) & (kick >= 0)
 
@@ -254,10 +357,9 @@ def MCMC(visits, burn=0, thin=1, kick=0., seed=1234):
     keep = model_space.keep
     K = model_space.K
     maxm = model_space.maxm
-    fname = model_space.file
 
     if visits >= maxm:
-        return SampleAll()
+        return SampleAll(filename, tablename, groupname)
 
     np.random.seed(seed)        
 
@@ -268,22 +370,16 @@ def MCMC(visits, burn=0, thin=1, kick=0., seed=1234):
 
     # Saving Results
     num = len(keep) - 1 + len(choices)
-    hfile = tables.open_file(fname, 'w')
-    cell = tables.Atom.from_kind('float', 8)
-    results = hfile.createArray(hfile.root, 'ResultArray', 
-        shape=(visits, 2 + 3*num), atom=cell)
+    hfile = _create_table(filename, tablename, groupname, num)
+    resultTable = getattr(hfile.get_node('/{}'.format(groupname)), tablename)
 
     # Obtaining first draw at random
     last_draw = random_draw()
     fit = model_space.fit(last_draw)
-    results[0, [0, 1]] = fit[[0, 1]]
-    rlen = len(last_draw) - 1
-    for j in [0, 1, 2]:
-        results[0, 1 + j*num + np.array(last_draw[1:])] = fit[2 + rlen*j:2 + rlen*(j+1)]
+    _append_result(resultTable, num, fit, last_draw)
+    last_prob = resultTable.cols.posterior[-1]
 
     for i in xrange(1, visits):
-
-        print('visit {}'.format(i))
 
         accepted = False
 
@@ -292,46 +388,41 @@ def MCMC(visits, burn=0, thin=1, kick=0., seed=1234):
             proposal = mcmc_draw(last_draw)
 
             fit = model_space.fit(proposal)
-            
-            if results[i - 1, 0] == 0:
+
+            if last_prob == 0:
                 prob = 1
             else:
-                prob = min(1, max(kick, fit[0]/results[i - 1, 0]))
+                prob = min(1, max(kick, fit[0]/last_prob))
 
             if np.random.choice([True, False], p=[prob, 1 - prob]):
 
-                results[i, [0, 1]] = fit[[0, 1]]
-                rlen = len(proposal) - 1
-                for j in [0, 1, 2]:
-                    results[i, 1 + j*num + np.array(proposal[1:])] = fit[2 + rlen*j:2 + rlen*(j+1)]
-
                 last_draw = proposal
+
+                _append_result(resultTable, num, fit, last_draw)
+
+                last_prob = resultTable.cols.posterior[-1]
 
                 accepted = True
 
 
     # Burning and thinning out visits in the chain
     if (burn > 0) or (thin > 1):
-        results.rename('ResultArrayFull')
+        resultTable.rename('{}Full'.format(tablename))
         
-        truncated = results.copy(newname='ResultArray', start=burn, 
-            stop=results.shape[0], step=thin)
-        
-        results[:, 0] = results[:, 0]/results[:, 0].sum()
-        results[:] = results[(-results[:,0]).argsort(), :]
+        selection = resultTable.copy(newname=tablename, start=burn, 
+            stop=resultTable.shape[0], step=thin)
 
-        results = truncated     
+        resultTable.remove()
+        resultTable = selection
 
-    # Normalizing the posterior
-    results[:, 0] = results[:, 0]/results[:, 0].sum()
-    results[:] = results[(-results[:,0]).argsort(), :]
+    _process_results(resultTable)
 
     hfile.flush()
 
     return hfile
     
-def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
-    '''parallel markov chain monte carlo sampler for model space
+def pMCMC(visits, filename, tablename, groupname='', threads=2, **mcargs):
+    '''parallel MCMC sampler for model space
     
     Parameters
     ----------
@@ -355,10 +446,19 @@ def pMCMC(visits, burn=0, thin=1, seed=1234, threads=1):
 
     model_space = modelcontext()
     if visits >= maxm:
-        return pSampleAll(threads)
+        return pSampleAll(filename, tablename, groupname, threads)
 
-    argset = zip([visits]*threads, [burn]*threads, [thin]*threads, 
-                 [seed+i for i in range(threads)])
+    d_filename = [filename]*threads
+    d_tablename = ['{}_t{}'.format(tablename, i) for i in xrange(threads)]
+    d_groupname = [groupname]*threads
+    d_visits = [int(visits/threads)]*threads
+    d_visits = [v+(i<visits%threads) for i,v in enumerate(d_visits)]
+    d_burn = [int(burn/threads)]*threads
+    d_burn = [b+(i<burn%threads) for i,b in enumerate(d_burn)]
+    d_thin = [thin]*threads
+    d_seed = [seed+i for i in xrange(threads)]
+
+    argset = zip(d_visits, distBurn, d_thin, d_seed)
     
     p = mp.Pool(threads)
     
@@ -390,12 +490,12 @@ class Trace(object):
     
     Parameters
     ----------
-    array : tables.array.Array
-        a tables array
+    table : tables.table.Table instance 
+        regression results in on-disk container
     '''
     
-    def __init__(self, array):
-        self.array = array
+    def __init__(self, table):
+        self.table = table
 
     def mean(self, key, weight=True):
         '''obtain average estimates
@@ -403,7 +503,7 @@ class Trace(object):
         Parameters 
         ----------
         key : str
-            'params', 'par_rsquared', 'rsquared', 'bse'
+            'param', 'prsquared', 'rsquared', 'bse'
         weight : bool
             if True (default), weights by the posterior 
             model probabilities
@@ -414,7 +514,7 @@ class Trace(object):
             the mean of the values
         '''
 
-        if key in ['params', 'par_rsquared']:
+        if key in ['param', 'prsquared']:
 
             if weight:
                 return np.average(self[key], weights=self['posterior'], axis=0)
@@ -423,13 +523,13 @@ class Trace(object):
 
         elif key == 'bse':
 
-            mean_params = self.mean(key='params', weight=weight)
+            mean_params = self.mean(key='param', weight=weight)
 
             if weight:
-                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['params']), 
+                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['param']), 
                     weights=self['posterior'], axis=0) - np.square(mean_params))
             else:
-                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['params']), 
+                return np.sqrt(np.average(np.square(self['bse']) + np.square(self['param']), 
                     axis=0) - np.square(mean_params))
 
         elif key == 'rsquared':
@@ -441,21 +541,54 @@ class Trace(object):
         else:
             raise KeyError('key {} not found'.format(key))
 
+    def get_data(self, key, **kwargs):
+        '''return data associated with key
+
+        Parameters
+        ----------
+        key : result column
+            'param', 'bse', 'prsquared', 'rsquared', 'id', 'posterior'
+
+        Return
+        ------
+        data : array
+            array of data
+
+        Notes
+        -----
+        Grabs only requested data from disk for memory efficiency
+        '''
+
+        if isinstance(key, list):
+            return np.hstack([self.get_data(k, **kwargs) for k in key])
+
+        elif key not in ['param', 'bse', 'prsquared', 
+                          'rsquared', 'posterior', 'id']:
+            raise KeyError('{} not a valid result key'.format(key))
+
+        start = kwargs.get('start', None)
+        stop = kwargs.get('stop', None)
+        step = kwargs.get('step', None)
+
+        s = slice(start, stop, step)
+
+        if key in ['param', 'bse', 'prsquared']:
+            data = np.vstack([np.array(getattr(self.table.cols, n)[s]) \
+            for n in self.table.colnames if key in n]).T
+            return data
+        elif key in ['rsquared', 'posterior', 'id']:
+            return np.array(getattr(self.table.cols, key)[s]).reshape((-1, 1))
+        else:
+            raise KeyError('key {} not found'.format(key))   
+
     def __getitem__(self, key):
 
-        # Number of regressors to choose from
-        plen = (self.array.shape[1] - 2)/3
-
-        if key == 'params':
-            return self.array[:, 2:plen + 2]
-        elif key == 'bse':
-            return self.array[:, 2 + plen:2*plen + 2]
-        elif key == 'par_rsquared':
-            return self.array[:, 2 + 2*plen:3*plen + 2]
-        elif key == 'rsquared':
-            return self.array[:, 1]
-        elif key == 'posterior':
-            return self.array[:, 0]
+        if key in ['param', 'bse', 'prsquared']:
+            data = np.vstack([np.array(getattr(self.table.cols, n)) \
+            for n in self.table.colnames if key in n]).T
+            return data
+        elif key in ['rsquared', 'posterior', 'id']:
+            return np.array(getattr(self.table.cols, key))
         else:
             raise KeyError('key {} not found'.format(key))
 
@@ -484,9 +617,9 @@ class Trace(object):
                     
         plt.text(x=plt.xlim()[1]*1./2, y=plt.ylim()[1]*8.5/10, \
                 s=('{}{}\n{}{:,.0f}'.format(\
-                'Models Shown:       ', min(self.array.shape[0], limit), \
+                'Models Shown:       ', min(self['id'].shape[0], limit), \
                 'Models Estimated:  ', \
-                self.array.shape[0])),
+                self['id'].shape[0])),
                 fontsize=10)
 
         if fname is None:
@@ -508,8 +641,9 @@ if __name__ == '__main__':
     np.random.seed(1234)
     random.seed(1234)
     import time
+    import os
     
-    np.set_printoptions(precision=3, suppress=True)
+    # np.set_printoptions(precision=3, suppress=True)
 
     X = 10*np.random.randn(100, 5)
 
@@ -526,21 +660,30 @@ if __name__ == '__main__':
     data = np.hstack((Y,sm.add_constant(X)))
 
     kwargs = {'prior_type':'collinear adjusted dilution'}
-    with ModelSpace(data[:,:10], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
+    with ModelSpace(data[:,:15], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
         
-        ResultTable = MCMC(40, burn=0, thin=1, kick=0.01, seed=1234)
-        trace = Trace(ResultTable.get_node('/ResultArray'))
+        if os.path.exists('results.h5'):
+            os.remove('results.h5')
 
-        print(trace.mean(key='params'))
+        print(model.maxm)
+        # ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
+        ResultTable = MCMC(100, 'results.h5', 'ResultTable', 
+            burn=0, thin=1, kick=0.01, seed=1234)
+        trace = Trace(ResultTable.get_node('/ResultTable'))
+
+        print(trace.mean(key='param'))
         print(trace.mean(key='rsquared'))
         print(trace.mean(key='bse'))
-        print(trace.mean(key='par_rsquared'))
+        print(trace.mean(key='prsquared'))
 
-        print(trace['params'][:10])
+        print(trace['param'][:10])
+        print(trace['id'][:10])
+        print(trace.get_data(['id', 'posterior'], stop=10))
 
         trace.plot_posterior()
 
         ResultTable.close()
+        os.remove('results.h5')
         
     #     print(model.regressors)
     #     print(model.max_models)
