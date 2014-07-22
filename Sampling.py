@@ -461,8 +461,8 @@ def pMCMC(visits, filename, tablename, groupname='', threads=2, **mcargs):
 
     d_visits = [int(visits/threads)]*threads
     d_visits = [v+(i<visits%threads) for i,v in enumerate(d_visits)]
-    d_filename = [filename]*threads
-    d_tablename = ['{}_t{}'.format(tablename, i) for i in xrange(threads)]
+    d_filename = ['t{}_{}'.format(i, filename) for i in xrange(threads)]
+    d_tablename = [tablename]*threads
     d_groupname = [groupname]*threads
     d_burn = [int(burn/threads)]*threads
     d_burn = [b+(i<burn%threads) for i,b in enumerate(d_burn)]
@@ -476,21 +476,27 @@ def pMCMC(visits, filename, tablename, groupname='', threads=2, **mcargs):
     p = mp.Pool(threads)
     
     jobs = [p.apply_async(MCMC, args) for args in argset]
-    tables = [j.get() for j in jobs]
-    
-    # Pooling Results
-    resultTable = tables[0]
-    for t in tables[1:]:
-        resultTable.append(t[:])
-        t.remove()
-
-    resultTable.rename(tablename)
-    _process_results(resultTable)
+    for j in jobs: j.wait()
     
     p.close()
     p.join()
+
+    # Pooling Results
+    hfile = tables.open_file(d_filename[0], 'a')
+    resultTable = getattr(hfile.get_node('/{}'.format(groupname)), tablename)
+    for name in d_filename[1:]:
+        h = tables.open_file(name, 'a')
+        t = getattr(h.get_node('/{}'.format(groupname)), tablename)
+        resultTable.append(t[:])
+        h.close()
+        os.remove(name)
+
+    _process_results(resultTable)
+    hfile.close()
+
+    os.rename('t0_{}'.format(filename), filename)
     
-    return sample
+    return tables.open_file(filename, 'a')
   
 
 class Trace(object):
@@ -504,6 +510,19 @@ class Trace(object):
     
     def __init__(self, table):
         self.table = table
+        self.data = self._load(table)
+
+    @staticmethod
+    def _load(table):
+        '''loads the data on disk into memory'''
+
+        data = pd.DataFrame(
+            np.vstack([np.array(getattr(table.cols, c)) for c in table.colnames]).T,
+            columns = table.colnames)
+
+        data[[c for c in data.columns if c != 'id']] = data[[c for c in data.columns if c != 'id']].astype(float)
+
+        return data
 
     def mean(self, key, weight=True):
         '''obtain average estimates
@@ -540,65 +559,20 @@ class Trace(object):
                 return np.sqrt(np.average(np.square(self['bse']) + np.square(self['param']), 
                     axis=0) - np.square(mean_params))
 
-        elif key == 'rsquared':
+        else:
 
             if weight:
                 return np.average(self[key], weights=self['posterior'])
             else:
                 return np.average(self[key])
-        else:
-            raise KeyError('key {} not found'.format(key))
 
-    def get_data(self, key, **kwargs):
-        '''return data associated with key
-
-        Parameters
-        ----------
-        key : result column
-            'param', 'bse', 'prsquared', 'rsquared', 'id', 'posterior'
-
-        Return
-        ------
-        data : array
-            array of data
-
-        Notes
-        -----
-        Grabs only requested data from disk for memory efficiency
-        '''
-
-        if isinstance(key, list):
-            return np.hstack([self.get_data(k, **kwargs) for k in key])
-
-        elif key not in ['param', 'bse', 'prsquared', 
-                          'rsquared', 'posterior', 'id']:
-            raise KeyError('{} not a valid result key'.format(key))
-
-        start = kwargs.get('start', None)
-        stop = kwargs.get('stop', None)
-        step = kwargs.get('step', None)
-
-        s = slice(start, stop, step)
-
-        if key in ['param', 'bse', 'prsquared']:
-            data = np.vstack([np.array(getattr(self.table.cols, n)[s]) \
-            for n in self.table.colnames if key in n]).T
-            return data
-        elif key in ['rsquared', 'posterior', 'id']:
-            return np.array(getattr(self.table.cols, key)[s]).reshape((-1, 1))
-        else:
-            raise KeyError('key {} not found'.format(key))   
 
     def __getitem__(self, key):
 
         if key in ['param', 'bse', 'prsquared']:
-            data = np.vstack([np.array(getattr(self.table.cols, n)) \
-            for n in self.table.colnames if key in n]).T
-            return data
-        elif key in ['rsquared', 'posterior', 'id']:
-            return np.array(getattr(self.table.cols, key))
+            return self.data[[c for c in self.table.colnames if key in c]]
         else:
-            raise KeyError('key {} not found'.format(key))
+            return self.data[key]
 
     def plot_posterior(self, limit=30, fname=None, fmat='eps'):
         '''plots posterior across models
@@ -668,21 +642,27 @@ if __name__ == '__main__':
     data = np.hstack((Y,sm.add_constant(X)))
 
     kwargs = {'prior_type':'collinear adjusted dilution'}
-    with ModelSpace(data[:,:15], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
+    with ModelSpace(data[:,:10], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
         
         if os.path.exists('results.h5'):
             os.remove('results.h5')
 
         print(model.maxm)
-        # ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
-        # ResultTable = MCMC(100, 'results.h5', 'ResultTable', 
+        ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
+        # ResultTable = MCMC(4000, 'results.h5', 'ResultTable', 
         #     burn=0, thin=1, kick=0.01, seed=1234)
-        ResultTable = pMCMC(100, 'results.h5', 'ResultTable', threads=2, 
-            burn=0, thin=1, kick=0.01, seed=1234)
+        # ResultTable = pMCMC(4000, 'results.h5', 'ResultTable', threads=4, 
+        #     burn=0, thin=1, kick=0.01, seed=1234)
 
         trace = Trace(ResultTable.get_node('/ResultTable'))
-
+        
         print(trace.mean(key='param'))
+        a = trace['rsquared']
+        b= trace['posterior']
+        print(trace.data.dtypes)
+        print(a.dtype)
+        print(b.dtype)
+        print(np.average(a, weights=b))
         print(trace.mean(key='rsquared'))
         print(trace.mean(key='bse'))
         print(trace.mean(key='prsquared'))
@@ -694,36 +674,4 @@ if __name__ == '__main__':
         trace.plot_posterior()
 
         ResultTable.close()
-        os.remove('results.h5')
-        
-    #     print(model.regressors)
-    #     print(model.max_models)
-    #     start = time.time()
-    #     sample = pSampleAll(4)
-    #     trace = Trace(sample)
-    #     trace.summary()
-    #     mcmc = pMCMC(visits=10000, burn=1000, thin=2, seed=1234, threads=4)
-    #     print("Chain took {} seconds to run".format(time.time() - start))
-    #     trace = Trace(mcmc)
-    #     trace.summary()
-    #     plt.figure(1)
-    #     trace.plot('posterior')
-    #     plt.figure(2)
-    #     trace.plot('rsquared_adj', weight='posterior')
-    #     plt.figure(3)
-    #     trace.plot('params', weight='posterior', col=1)
-    #     plt.figure(4)
-    #     trace.plot('par_rsquared', weight='posterior', col=1)
-    #     plt.show()        
-        
-#        model.set_prior_typ(prior_type='uniform')
-#        mcmc = pMCMC(visits=10000, burn=1000, thin=2, seed=1234, threads=4)
-#        trace = Trace(mcmc)
-#        trace.summary()
-#
-#        model.set_attributes({'posterior':0, 'prior':0, 'par_rsquared':1, 'bse':1, 'bic':0, 
-#                       'aic':0, 'rsquared':0, 'rsquared_adj':0, 'params':1})
-#                       
-#        sample = pRandomSample(draws=1000, seed=1234, threads=4)
-#        trace = Trace(sample)
-#        trace.summary()
+        # os.remove('results.h5')
