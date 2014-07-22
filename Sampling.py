@@ -316,7 +316,8 @@ def mcmc_draw(last_draw):
     return proposal    
 
 
-def MCMC(visits, filename, tablename, groupname='', **mcargs):
+def MCMC(visits, filename, tablename, groupname='', 
+    burn=0, thin=1, kick=0., seed=1234):
     '''markov chain monte carlo sampler for model space
     
     Parameters
@@ -343,11 +344,6 @@ def MCMC(visits, filename, tablename, groupname='', **mcargs):
     hfile : pytables file
         reference to on-disk storage
     '''
-    
-    burn = mcargs.get('burn', 0)
-    thin = mcargs.get('thin', 1)
-    kick = mcargs.get('kick', 0.)
-    seed = mcargs.get('seed', 1234)
 
     assert (kick <= 1) & (kick >= 0)
 
@@ -427,11 +423,19 @@ def pMCMC(visits, filename, tablename, groupname='', threads=2, **mcargs):
     Parameters
     ----------
     visits : int
-        number of visits per thread in chain
+        number of total visits
+    filename : str
+        filepath to save results
+    tablename : str
+        name of table to save
+    groupname : str
+        the group node for result storage
     burn : int
-        number of visits to burn from beginning of chain
+        number of total visits to burn
     thin : int
         related to fraction of visits kept in chain
+    kick : float
+        minimum value for transition probability
     seed : int
         seed for random number
     threads : int
@@ -444,40 +448,44 @@ def pMCMC(visits, filename, tablename, groupname='', threads=2, **mcargs):
     
     '''    
 
+    burn = mcargs.get('burn', 0)
+    thin = mcargs.get('thin', 1)
+    kick = mcargs.get('kick', 0.)
+    seed = mcargs.get('seed', 1234)
+
     model_space = modelcontext()
+    maxm = model_space.maxm
+
     if visits >= maxm:
         return pSampleAll(filename, tablename, groupname, threads)
 
+    d_visits = [int(visits/threads)]*threads
+    d_visits = [v+(i<visits%threads) for i,v in enumerate(d_visits)]
     d_filename = [filename]*threads
     d_tablename = ['{}_t{}'.format(tablename, i) for i in xrange(threads)]
     d_groupname = [groupname]*threads
-    d_visits = [int(visits/threads)]*threads
-    d_visits = [v+(i<visits%threads) for i,v in enumerate(d_visits)]
     d_burn = [int(burn/threads)]*threads
     d_burn = [b+(i<burn%threads) for i,b in enumerate(d_burn)]
     d_thin = [thin]*threads
+    d_kick = [kick]*threads
     d_seed = [seed+i for i in xrange(threads)]
 
-    argset = zip(d_visits, distBurn, d_thin, d_seed)
+    argset = zip(d_visits, d_filename, d_tablename, d_groupname, 
+        d_burn, d_thin, d_kick, d_seed)
     
     p = mp.Pool(threads)
     
     jobs = [p.apply_async(MCMC, args) for args in argset]
-    samples = [j.get() for j in jobs]
+    tables = [j.get() for j in jobs]
     
-    # aggregating results (summing up visits)
-    models = []
-    for s in samples:
-        models.extend(s.keys())
-    sample = {}
-    for m in list(set(models)):
-        visits = 0
-        for s in samples:
-            if m in s:
-                rslts = s[m]
-                visits += rslts.visits
-        rslts.visits = visits
-        sample.update({m:rslts})
+    # Pooling Results
+    resultTable = tables[0]
+    for t in tables[1:]:
+        resultTable.append(t[:])
+        t.remove()
+
+    resultTable.rename(tablename)
+    _process_results(resultTable)
     
     p.close()
     p.join()
@@ -667,8 +675,11 @@ if __name__ == '__main__':
 
         print(model.maxm)
         # ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
-        ResultTable = MCMC(100, 'results.h5', 'ResultTable', 
+        # ResultTable = MCMC(100, 'results.h5', 'ResultTable', 
+        #     burn=0, thin=1, kick=0.01, seed=1234)
+        ResultTable = pMCMC(100, 'results.h5', 'ResultTable', threads=2, 
             burn=0, thin=1, kick=0.01, seed=1234)
+
         trace = Trace(ResultTable.get_node('/ResultTable'))
 
         print(trace.mean(key='param'))
