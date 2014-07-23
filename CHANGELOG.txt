@@ -1,0 +1,8 @@
+Changes from v.0.0.1
+
+1. No longer storing regression results in memory, using
+   PyTables to store on disk. 
+
+2. ModelSpace object more lightweight.
+
+3. Allow to keep various regressors in the model

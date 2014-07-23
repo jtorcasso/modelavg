@@ -81,18 +81,29 @@ class ModelSpace(Context):
         self.kwargs = kwargs
         self._build(k)
 
-    @staticmethod
-    def _handle_data(data):
-        '''handles the data'''
+    def _handle_data(self, data):
+        '''handles the data
 
-        if not isinstance(data, np.ndarray):
-            raise ValueError('Data should be NumPy Array')
+        Parameters
+        ----------
+        data : array-like
+            data to pass into modeller
+        '''
+
+        if isinstance(data, np.ndarray):
+            self.fit = self.fit_array
+            if data[:,1].std() != 0:
+                raise ValueError('2nd column should be constant')
+        elif isinstance(data, DataFrame):
+            self.fit = self.fit_frame
+            if data.ix[:,1].std() != 0:
+                raise ValueError('2nd column should be constant')
+        else: 
+            raise ValueError('Data should be NumPy Array or Pandas DataFrame')
 
         if not len(data.shape) == 2:
             raise ValueError('Data should be two dimensional')
 
-        if data[:,1].std() != 0:
-            raise ValueError('column at index 1 should be constant')
 
         return data
 
@@ -102,8 +113,20 @@ class ModelSpace(Context):
         self.k = np.arange(1, len(self.choices)+1, 1) if k is None else np.array(k)
         self.maxm = int(sum([comb(len(self.choices), i-len(self.keep)+2) for i in self.k]))
     
-    def fit(self, columns):
-        '''fits the model with the specified columns
+    def fit_frame(self, columns):
+        '''fites model with specified columns on dataframe
+
+        Parameters
+        ----------
+        columns : array-like
+            list or array of column numbers in data
+
+        '''
+
+        return self.model(data=self.data.ix[:, columns], **self.kwargs)
+
+    def fit_array(self, columns):
+        '''fits the model with the specified columns on array
 
         Parameters
         ----------

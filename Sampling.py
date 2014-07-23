@@ -52,7 +52,7 @@ import pandas as pd
 import statsmodels.api as sm
 import matplotlib.pylab as plt
 
-from ModelSpace import ModelSpace
+from ModelSpace import ModelSpace, modelcontext
 
 
 def _get_result(cols):
@@ -614,18 +614,18 @@ if __name__ == '__main__':
     data = np.hstack((Y,sm.add_constant(X)))
 
     kwargs = {'prior_type':'collinear adjusted dilution'}
-    with ModelSpace(data[:,:20], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
+    with ModelSpace(data[:,:10], k=[3,4,5], keep=[0, 1], kwargs=kwargs) as model:
         
         if os.path.exists('results.h5'):
             os.remove('results.h5')
 
         print(model.maxm)
         # ResultTable = SampleAll('results.h5', 'ResultTable')
-        # ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
+        ResultTable = pSampleAll('results.h5', 'ResultTable', threads=4)
         # ResultTable = MCMC(4000, 'results.h5', 'ResultTable', 
         #     burn=1000, thin=1, kick=0.05, seed=1234)
-        ResultTable = pMCMC(4000, 'results.h5', 'ResultTable', threads=4, 
-            burn=1000, thin=1, kick=0.05, seed=1234)
+        # ResultTable = pMCMC(4000, 'results.h5', 'ResultTable', threads=4, 
+        #     burn=1000, thin=1, kick=0.05, seed=1234)
 
         trace = Trace(ResultTable.root.ResultTable)
         print(trace.mean(key='param'))
