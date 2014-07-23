@@ -514,7 +514,29 @@ class Trace(object):
 
         data = pd.DataFrame.from_records(table[:])
 
+        index = [('fit', d) for d in ['id', 'posterior', 'rsquared']]
+        for p in ['param', 'bse', 'prsquared']:
+            index.extend([(p, c) for c in data.columns if p in c])
+
+        data.columns = pd.MultiIndex.from_tuples(index)
+        
         return data
+
+    def set_colnames(self, colnames):
+        '''set column names based on the names
+        of variables entered into regression'''
+
+        columns = list(self.data.columns)
+        newcols = columns[:3]
+        for col in ['param', 'bse', 'prsquared']:
+            itercols = iter(colnames)
+            for c in columns:
+                c0,c1 = c
+                if c0 == col:
+                    c1 = itercols.next()
+                    newcols.append((c0,c1))
+
+        self.data.columns = pd.MultiIndex.from_tuples(newcols)
 
     def mean(self, key, weight=True):
         '''obtain average estimates
@@ -533,18 +555,22 @@ class Trace(object):
             the mean of the values
         '''
 
-        if weight:
-            return self[key].mul(self['posterior'], axis='index').sum()
+        if key in self.data.columns:
+            data = self[key]
+        elif key in ['posterior', 'rsquared']:
+            data = self['fit'][key]
         else:
-            return self[key].mean()
+            raise KeyError('{} not a valid key'.format(key))
+
+        if weight:
+            return data.mul(self['fit']['posterior'], axis='index').sum()
+        else:
+            return data.mean()
 
 
     def __getitem__(self, key):
 
-        if key in ['param', 'bse', 'prsquared']:
-            return self.data[[c for c in self.data.columns if key in c]]
-        else:
-            return self.data[key]
+        return self.data[key]
 
     def plot_posterior(self, limit=30, fname=None, fmat='eps'):
         '''plots posterior across models
@@ -558,7 +584,7 @@ class Trace(object):
             shows the figure
         '''
         
-        posterior = self['posterior'].ix[:limit]
+        posterior = self['fit']['posterior'].ix[:limit]
 
         plt.bar(left=range(1, len(posterior) + 1), 
                 height=posterior, color='k')
@@ -571,9 +597,9 @@ class Trace(object):
                     
         plt.text(x=plt.xlim()[1]*1./2, y=plt.ylim()[1]*8.5/10, \
                 s=('{}{}\n{}{:,.0f}'.format(\
-                'Models Shown:       ', min(self['id'].shape[0], limit), \
+                'Models Shown:       ', min(self.data.shape[0], limit), \
                 'Models Estimated:  ', \
-                self['id'].shape[0])),
+                self.data.shape[0])),
                 fontsize=10)
 
         if fname is None:
@@ -632,7 +658,7 @@ if __name__ == '__main__':
         print(trace.mean(key='rsquared'))
         print(trace.mean(key='bse'))
         print(trace.mean(key='prsquared'))
-        print(trace.mean(key='param3'))
+        print(trace.mean(key='param')['param3'])
 
         # trace.plot_posterior()
 
