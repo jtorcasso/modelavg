@@ -94,10 +94,10 @@ def _create_table(filename, tablename, groupname, numcoeff):
         reference to on-disk storage of results
     '''
 
-    fields = ['param', 'bse', 'prsquared']
+    fields = ['param', 'pvalue', 'bse', 'prsquared']
     hfile = tables.open_file(filename, 'a')
 
-    dt = np.dtype([('id', 'S40'), ('posterior', float), ('rsquared', float), 
+    dt = np.dtype([('id', 'S40'), ('obs', int), ('posterior', float), ('rsquared', float), 
         ] + [('{}{}'.format(n, i), float) for n in fields for i in xrange(1, numcoeff+1)])
     results = hfile.createTable('/{}'.format(groupname), tablename, dt, 
         createparents=True)
@@ -119,11 +119,11 @@ def _append_result(table, numcoeff, fit, cols):
         columns in data fitted in model
     '''
 
-    rslt = np.zeros(2 + numcoeff*3)
-    rslt[[0, 1]] = fit[[0, 1]]
+    rslt = np.zeros(3 + numcoeff*4)
+    rslt[[0, 1, 2]] = fit[[0, 1, 2]]
     rlen = len(cols) - 1
-    for j in [0, 1, 2]:
-        rslt[1 + j*numcoeff + np.array(cols[1:])] = fit[2 + rlen*j:2 + rlen*(j+1)]
+    for j in [0, 1, 2, 3]:
+        rslt[2 + j*numcoeff + np.array(cols[1:])] = fit[3 + rlen*j:2 + rlen*(j+1)]
 
     table.append([(str(cols)[1:-1].replace(' ', ''),) + tuple(rslt)])
 
@@ -514,8 +514,8 @@ class Trace(object):
 
         data = pd.DataFrame.from_records(table[:])
 
-        index = [('fit', d) for d in ['id', 'posterior', 'rsquared']]
-        for p in ['param', 'bse', 'prsquared']:
+        index = [('fit', d) for d in ['id', 'obs', 'posterior', 'rsquared']]
+        for p in ['param', 'pvalue', 'bse', 'prsquared']:
             index.extend([(p, c) for c in data.columns if p in c])
 
         data.columns = pd.MultiIndex.from_tuples(index)
@@ -527,8 +527,8 @@ class Trace(object):
         of variables entered into regression'''
 
         columns = list(self.data.columns)
-        newcols = columns[:3]
-        for col in ['param', 'bse', 'prsquared']:
+        newcols = columns[:4]
+        for col in ['param', 'pvalue', 'bse', 'prsquared']:
             itercols = iter(colnames)
             for c in columns:
                 c0,c1 = c
@@ -557,7 +557,7 @@ class Trace(object):
 
         if key in self.data.columns:
             data = self[key]
-        elif key in ['posterior', 'rsquared']:
+        elif key in ['posterior', 'rsquared', 'obs']:
             data = self['fit'][key]
         else:
             raise KeyError('{} not a valid key'.format(key))
@@ -654,6 +654,7 @@ if __name__ == '__main__':
         #     burn=1000, thin=1, kick=0.05, seed=1234)
 
         trace = Trace(ResultTable.root.ResultTable)
+        print(trace.mean(key='obs'))
         print(trace.mean(key='param'))
         print(trace.mean(key='rsquared'))
         print(trace.mean(key='bse'))

@@ -81,4 +81,4 @@ def linear(data, **kwargs):
     
     posterior = math.exp(fit.llf)*prior
         
-    return np.hstack((posterior, fit.rsquared, fit.params, fit.bse, par_rsquared.flat))
+    return np.hstack((fit.nobs, posterior, fit.rsquared, fit.params, fit.pvalues, fit.bse, par_rsquared.flat))
