@@ -504,10 +504,95 @@ class Trace(object):
     ----------
     table : tables.table.Table instance 
         regression results in on-disk container
+
+    ** Attributes **
+
+    data : pandas DataFrame
+        regression results
+    colnames : None or list
+        list of the column names associated with predictors
     '''
     
     def __init__(self, table):
-        self.data = self._load(table)
+
+        if isinstance(table, DataFrame):
+            self.data = table
+        else:    
+            self.data = self._load(table)
+
+        self.colnames = [c[5:] for c in table.colnames if 'param' in c]
+
+    def select(self, contains):
+        '''selects subset of model space
+
+        Parameters
+        ----------
+        contains : list
+            list of integers corresponding to the model ids
+
+        Returns
+        -------
+        trace : Trace instance
+            a trace with only the selected columns
+        '''
+
+        assert isinstance(contains, list)
+
+        contains = set([0, 1] + contains)
+
+        d = self.data['fit']['id']
+
+        select = [contains.issubset(set([int(i) for i in j.split(',')])) for j in d]
+
+        return Trace(self.data.ix[select, :])
+
+    def pmass(self):
+        '''returns the portion of the posterior mass of
+        models including each regressor
+        '''
+
+        post = self.data['fit']['posterior']
+        ids = self.data['fit']['id']
+        mass = []
+        for i in xrange(1, len(self.colnames)+1):
+            mass.append(post[ids.str.contains('(?={0})(?!\d{0})(?!{0}\d)'.format(i))].sum()/post.sum())
+
+        return pd.DataFrame(mass, index=self.colnames, columns=['Posterior Mass'])    
+
+    def pcount(self, limit=100, asproportion=False):
+        '''produce counts of predictors included in the top
+        `limit` models
+
+        Parameters
+        ----------
+        limit : int or float
+            if int, number of top models to consider, if float
+            the percentage of the total
+        asproportion : bool
+            whether to return as proportion, default is to return 
+            as count
+        '''
+
+        if isinstance(limit, int):
+            assert limit <= len(self.data)
+        elif isinstance(limit, float):
+            assert (limit > 0) & (limit < 1)
+            limit = int(limit*len(self.data))
+        else:
+            raise ValueError('limit argument must be int or float')
+
+        d = self.data['fit']['id'][:limit]
+        counts = []
+        for i in xrange(1, len(self.colnames)+1):
+            counts.append(d.str.contains('(?={0})(?!\d{0})(?!{0}\d)'.format(i)).sum())
+
+        name = 'Count'
+        if asproportion:
+            counts = np.array(counts)/len(d)
+            name = 'Proportion'
+
+        return pd.DataFrame(counts, index=self.colnames, columns=[name])
+
 
     @staticmethod
     def _load(table):
@@ -538,6 +623,7 @@ class Trace(object):
                     newcols.append((c0,c1))
 
         self.data.columns = pd.MultiIndex.from_tuples(newcols)
+        self.colnames = colnames
 
     def mean(self, key, weight=True):
         '''obtain average estimates
@@ -564,7 +650,7 @@ class Trace(object):
             raise KeyError('{} not a valid key'.format(key))
 
         if weight:
-            return data.mul(self['fit']['posterior'], axis='index').sum()
+            return data.mul(self['fit']['posterior'], axis='index').sum()/self['fit']['posterior'].sum()
         else:
             return data.mean()
 
@@ -662,6 +748,8 @@ if __name__ == '__main__':
         print(trace.mean(key='prsquared'))
         print(trace.mean(key='param')['param3'])
         print(trace.mean(key='pvalue'))
+        print(trace.pcount(limit=.5, asproportion=True))
+        print(trace.pmass())
 
         # trace.plot_posterior()
 
