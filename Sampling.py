@@ -119,7 +119,8 @@ def _append_result(table, numcoeff, fit, cols):
         columns in data fitted in model
     '''
 
-    rslt = np.zeros(3 + numcoeff*4)
+    rslt = np.zeros(3 + numcoeff*4) # By default, values are 0
+    rslt[3 + numcoeff:3 + numcoeff*2] = 1 # By default pvalues are 1
     rslt[[0, 1, 2]] = fit[[0, 1, 2]]
     rlen = len(cols) - 1
     for j in [0, 1, 2, 3]:
@@ -660,6 +661,7 @@ if __name__ == '__main__':
         print(trace.mean(key='bse'))
         print(trace.mean(key='prsquared'))
         print(trace.mean(key='param')['param3'])
+        print(trace.mean(key='pvalue'))
 
         # trace.plot_posterior()
 
