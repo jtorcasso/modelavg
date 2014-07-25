@@ -515,7 +515,7 @@ class Trace(object):
     
     def __init__(self, table):
 
-        if isinstance(table, DataFrame):
+        if isinstance(table, pd.DataFrame):
             self.data = table
         else:    
             self.data = self._load(table)
