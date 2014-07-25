@@ -513,14 +513,16 @@ class Trace(object):
         list of the column names associated with predictors
     '''
     
-    def __init__(self, table):
+    def __init__(self, table, colnames=None):
 
         if isinstance(table, pd.DataFrame):
             self.data = table
-        else:    
-            self.data = self._load(table)
-
-        self.colnames = [c[5:] for c in table.colnames if 'param' in c]
+            self.colnames = colnames
+        elif isinstance(table, tables.table.Table):    
+            self.data = self._load(table[:])
+            self.colnames = [c[5:] for c in table.colnames if 'param' in c]
+        else:
+            raise ValueError('must pass Pytables.table.Table instance')
 
     def select(self, contains):
         '''selects subset of model space
@@ -544,7 +546,7 @@ class Trace(object):
 
         select = [contains.issubset(set([int(i) for i in j.split(',')])) for j in d]
 
-        return Trace(self.data.ix[select, :])
+        return Trace(self.data.ix[select, :], self.colnames)
 
     def pmass(self):
         '''returns the portion of the posterior mass of
@@ -748,6 +750,7 @@ if __name__ == '__main__':
         print(trace.mean(key='prsquared'))
         print(trace.mean(key='param')['param3'])
         print(trace.mean(key='pvalue'))
+        print(trace.select([0,1,2]).mean(key='param'))
         print(trace.pcount(limit=.5, asproportion=True))
         print(trace.pmass())
 
