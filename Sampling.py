@@ -124,7 +124,7 @@ def _append_result(table, numcoeff, fit, cols):
     rslt[[0, 1, 2]] = fit[[0, 1, 2]]
     rlen = len(cols) - 1
     for j in [0, 1, 2, 3]:
-        rslt[2 + j*numcoeff + np.array(cols[1:])] = fit[3 + rlen*j:2 + rlen*(j+1)]
+        rslt[2 + j*numcoeff + np.array(cols[1:])] = fit[3 + rlen*j:3 + rlen*(j+1)]
 
     table.append([(str(cols)[1:-1].replace(' ', ''),) + tuple(rslt)])
 
